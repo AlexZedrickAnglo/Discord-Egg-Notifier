@@ -6,11 +6,13 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "deploy-commands": "node deploy-commands.js"
+    "deploy-commands": "node deploy-commands.js",
+    "relay": "node scripts/channel-relay.js"
   },
   "dependencies": {
     "axios": "^1.7.0",
     "discord.js": "^14.16.0",
+    "discord.js-selfbot-v13": "^3.7.1",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "node-cron": "^3.0.3"
