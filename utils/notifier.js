@@ -154,24 +154,6 @@ function buildEventEmbed({ title, description, eventUnix, color }) {
     .setTimestamp();
 }
 
-/**
- * Build an egg-cycle reset alert embed.
- */
-function buildCycleResetEmbed(nextResetUnix) {
-  return new EmbedBuilder()
-    .setTitle('🔁  Egg Cycle Reset')
-    .setColor(0x5865F2)
-    .setDescription(
-      'Map egg spawns have reset — new eggs available!\n' +
-      '🌙 **Night Boost** active for the next **13 seconds** after reset.',
-    )
-    .addFields(
-      { name: '⏰ Next Reset', value: `<t:${nextResetUnix}:R>`, inline: true },
-    )
-    .setFooter({ text: 'Steal An Egg Notifier • Egg Cycle' })
-    .setTimestamp();
-}
-
 module.exports = {
   RARITY_COLORS,
   RARITY_EMOJI,
@@ -181,5 +163,4 @@ module.exports = {
   buildEggLookupEmbed,
   buildStatusEmbed,
   buildEventEmbed,
-  buildCycleResetEmbed,
 };
