@@ -167,26 +167,7 @@ cron.schedule('0 20 * * 6', () => {
   });
 }, { timezone: 'UTC' });
 
-// ── C) Map Egg Cycle Reset  (every 5 minutes) ──────────────
-//     Egg spawns reset every 5 min with a 13 s night-boost window.
-cron.schedule('*/5 * * * *', async () => {
-  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
-  if (!channel) return;
 
-  const nextResetUnix = Math.floor(Date.now() / 1000) + 300;
-  const embed = buildCycleResetEmbed(nextResetUnix);
-
-  await channel.send({ embeds: [embed] });
-
-  // After 13 seconds, post a follow-up that night boost has ended
-  setTimeout(async () => {
-    try {
-      await channel.send({
-        content: '🌙 **Night Boost window (13 s) has ended.** Normal spawn rates resumed.',
-      });
-    } catch { /* channel may be unavailable */ }
-  }, 13_000);
-});
 
 // ═════════════════════════════════════════════════════════════
 //  5.  EXPRESS WEBHOOK RECEIVER  (POST /api/notify-egg)
