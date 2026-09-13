@@ -22,7 +22,7 @@ module.exports = {
 
     await interaction.reply({
       content: `✅ Notification channel set to <#${channel.id}>.`,
-      ephemeral: true,
+      flags: 64, // ephemeral
     });
   },
 };

@@ -1,26 +1,66 @@
 // ──────────────────────────────────────────────────────────────
-// utils/notifier.js — Centralized Discord notification helpers
+// utils/notifier.js — Discord embed builders for Steal An Egg
 // ──────────────────────────────────────────────────────────────
 const { EmbedBuilder } = require('discord.js');
 
-// ─── Rarity → Embed colour mapping ───────────────────────────
+const PLACE_ID = '107778070777162';
+
+// ─── Rarity → Embed colour (as specified) ────────────────────
 const RARITY_COLORS = {
-  common:    0x90A4AE, // slate
-  uncommon:  0x66BB6A, // green
-  rare:      0x42A5F5, // blue
-  epic:      0xAB47BC, // purple
-  legendary: 0xFFA726, // orange
-  mythic:    0xEF5350, // red
-  divine:    0xFFD740, // gold
-  eternal:   0x00E5FF, // cyan
-  secret:    0xE040FB, // magenta
+  divine:  0xFFD700, // Gold
+  eternal: 0x00FFFF, // Cyan
+  secret:  0xFF0055, // Crimson
+};
+
+// ─── Rarity → Emoji prefix ──────────────────────────────────
+const RARITY_EMOJI = {
+  divine:  '👑',
+  eternal: '💎',
+  secret:  '🔮',
 };
 
 /**
  * Look up a colour for a rarity string (case-insensitive).
  */
 function colorForRarity(rarity) {
-  return RARITY_COLORS[rarity?.toLowerCase()] ?? 0x5865F2; // default: blurple
+  return RARITY_COLORS[rarity?.toLowerCase()] ?? 0x5865F2;
+}
+
+/**
+ * Build a "Egg Spawn Alert" embed from a webhook payload.
+ * Includes a Roblox deep-join link using the jobId.
+ */
+function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image }) {
+  const emoji   = RARITY_EMOJI[rarity?.toLowerCase()] ?? '🥚';
+  const color   = colorForRarity(rarity);
+  const joinUrl = jobId
+    ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
+    : null;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${emoji}  ${(rarity ?? 'RARE').toUpperCase()} EGG SPAWNED — ${eggName}`)
+    .setColor(color)
+    .setDescription(
+      `A **${rarity ?? 'rare'}** egg has appeared!\n` +
+      (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : ''),
+    )
+    .addFields(
+      { name: '🥚 Egg',       value: `**${eggName}**`,                    inline: true },
+      { name: '✨ Rarity',    value: rarity ?? 'Unknown',                 inline: true },
+      { name: '🌍 Biome',     value: biome  ?? 'Unknown',                 inline: true },
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Egg Spawn Alert' })
+    .setTimestamp();
+
+  if (jobId) {
+    embed.addFields({ name: '🖥️ Server', value: `\`${jobId}\``, inline: false });
+  }
+
+  if (image) {
+    embed.setThumbnail(image);
+  }
+
+  return embed;
 }
 
 /**
@@ -43,44 +83,61 @@ function buildUpdateEmbed(gameData) {
 }
 
 /**
- * Build a "Rare Egg Spawn" embed from a webhook payload.
+ * Build a "/checkegg" lookup embed.
  */
-function buildEggSpawnEmbed({ eggName, rarity, biome, serverId }) {
-  const rarityFormatted = rarity ? rarity.toUpperCase() : 'RARE';
+function buildEggLookupEmbed({ name, rarity, biome }) {
+  const emoji = RARITY_EMOJI[rarity?.toLowerCase()] ?? '🥚';
+  const color = colorForRarity(rarity);
+
   return new EmbedBuilder()
-    .setTitle(`🥚  ${rarityFormatted} Egg Spawned — ${eggName}`)
-    .setColor(colorForRarity(rarity))
-    .setDescription(`A **${rarity ?? 'rare'}** egg (**${eggName}**) has spawned!`)
+    .setTitle(`${emoji}  ${name}`)
+    .setColor(color)
     .addFields(
-      { name: '🥚 Egg Name',  value: `**${eggName}**`, inline: true },
-      { name: '✨ Rarity',    value: rarity   ?? 'Unknown', inline: true },
-      { name: '🌍 Biome',     value: biome    ?? 'Unknown', inline: true },
-      { name: '🖥️ Server ID', value: serverId ? `\`${serverId}\`` : 'Unknown', inline: true },
+      { name: '✨ Rarity', value: rarity, inline: true },
+      { name: '🌍 Biome',  value: biome,  inline: true },
     )
-    .setFooter({ text: 'Steal An Egg Notifier • Egg Spawn Alert' })
+    .setFooter({ text: 'Steal An Egg Notifier • Egg Database' })
     .setTimestamp();
 }
 
 /**
- * Build a "Status" embed for the /status command.
+ * Build a "/status" embed showing bot uptime and game stats.
  */
-function buildStatusEmbed(gameData) {
-  const updatedUnix = Math.floor(new Date(gameData.updated).getTime() / 1000);
-  const createdUnix = Math.floor(new Date(gameData.created).getTime() / 1000);
+function buildStatusEmbed(gameData, botStartTime) {
+  const uptimeSeconds = Math.floor((Date.now() - botStartTime) / 1000);
+  const hours   = Math.floor(uptimeSeconds / 3600);
+  const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+  const seconds = uptimeSeconds % 60;
+  const uptimeStr = `${hours}h ${minutes}m ${seconds}s`;
 
-  return new EmbedBuilder()
-    .setTitle(`🥚  ${gameData.name ?? 'Steal An Egg'} — Live Status`)
+  const updatedUnix = gameData
+    ? Math.floor(new Date(gameData.updated).getTime() / 1000)
+    : null;
+
+  const embed = new EmbedBuilder()
+    .setTitle('📊  Steal An Egg — Bot Status')
     .setColor(0x5865F2)
-    .setDescription(gameData.description?.slice(0, 200) ?? '')
     .addFields(
-      { name: '🎮 Playing Now', value: `${gameData.playing?.toLocaleString() ?? '—'}`,    inline: true },
-      { name: '👀 Total Visits', value: `${gameData.visits?.toLocaleString() ?? '—'}`,    inline: true },
-      { name: '❤️ Favourites',   value: `${gameData.favoritedCount?.toLocaleString() ?? '—'}`, inline: true },
-      { name: '🕐 Last Updated', value: `<t:${updatedUnix}:R>`,                           inline: true },
-      { name: '📅 Created',      value: `<t:${createdUnix}:D>`,                           inline: true },
+      { name: '🤖 Uptime',        value: uptimeStr,   inline: true },
+      { name: '🎯 Monitored Place', value: `\`${PLACE_ID}\``, inline: true },
     )
     .setFooter({ text: 'Steal An Egg Notifier' })
     .setTimestamp();
+
+  if (gameData) {
+    embed.addFields(
+      { name: '🎮 Playing Now',  value: `${gameData.playing?.toLocaleString() ?? '—'}`,        inline: true },
+      { name: '👀 Total Visits', value: `${gameData.visits?.toLocaleString() ?? '—'}`,         inline: true },
+      { name: '❤️ Favourites',   value: `${gameData.favoritedCount?.toLocaleString() ?? '—'}`, inline: true },
+    );
+    if (updatedUnix) {
+      embed.addFields(
+        { name: '🕐 Last Updated', value: `<t:${updatedUnix}:R>`, inline: true },
+      );
+    }
+  }
+
+  return embed;
 }
 
 /**
@@ -98,11 +155,32 @@ function buildEventEmbed({ title, description, eventUnix, color }) {
     .setTimestamp();
 }
 
+/**
+ * Build an egg-cycle reset alert embed.
+ */
+function buildCycleResetEmbed(nextResetUnix) {
+  return new EmbedBuilder()
+    .setTitle('🔁  Egg Cycle Reset')
+    .setColor(0x5865F2)
+    .setDescription(
+      'Map egg spawns have reset — new eggs available!\n' +
+      '🌙 **Night Boost** active for the next **13 seconds** after reset.',
+    )
+    .addFields(
+      { name: '⏰ Next Reset', value: `<t:${nextResetUnix}:R>`, inline: true },
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Egg Cycle' })
+    .setTimestamp();
+}
+
 module.exports = {
   RARITY_COLORS,
+  RARITY_EMOJI,
   colorForRarity,
-  buildUpdateEmbed,
   buildEggSpawnEmbed,
+  buildUpdateEmbed,
+  buildEggLookupEmbed,
   buildStatusEmbed,
   buildEventEmbed,
+  buildCycleResetEmbed,
 };

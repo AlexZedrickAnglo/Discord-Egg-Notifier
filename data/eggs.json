@@ -1,0 +1,41 @@
+{
+  "Secret": [
+    { "name": "King Snake", "biome": "Jungle" },
+    { "name": "Yeti", "biome": "Snow" },
+    { "name": "Cerberus", "biome": "Volcano" },
+    { "name": "Kraken", "biome": "Abyss Ocean" },
+    { "name": "Tralaledon", "biome": "Prehistoric" },
+    { "name": "T-Rex", "biome": "Prehistoric" },
+    { "name": "Cosmic Dragon", "biome": "Cosmic" },
+    { "name": "Cosmic Skeleton Boss", "biome": "Cosmic" },
+    { "name": "Stag", "biome": "Cherry Blossom" },
+    { "name": "Mutant Shark", "biome": "Titan Temple" },
+    { "name": "Gargoyle", "biome": "Angels & Demons" },
+    { "name": "RazorFang", "biome": "Angels & Demons" },
+    { "name": "Pure Jellyfish", "biome": "Angels & Demons" },
+    { "name": "Centaur", "biome": "Angels & Demons" },
+    { "name": "Crocodon", "biome": "Monster Egg" }
+  ],
+  "Eternal": [
+    { "name": "Ice Dragon", "biome": "Snow" },
+    { "name": "Phoenix", "biome": "Volcano" },
+    { "name": "Lava Dragon", "biome": "Volcano" },
+    { "name": "El Maja", "biome": "Abyss Ocean" },
+    { "name": "Mosasaurus", "biome": "Prehistoric" },
+    { "name": "Eternal Lunar Dragon", "biome": "Cosmic" },
+    { "name": "Oni Tiger", "biome": "Cherry Blossom" },
+    { "name": "Gorilla King", "biome": "Titan Temple" },
+    { "name": "Skeleton Horse", "biome": "Angels & Demons" },
+    { "name": "Pegasus", "biome": "Angels & Demons" },
+    { "name": "Krakenoid", "biome": "Monster Egg" }
+  ],
+  "Divine": [
+    { "name": "Unicorn", "biome": "Cosmic" },
+    { "name": "Kitsune", "biome": "Cherry Blossom" },
+    { "name": "Nightflame", "biome": "Titan Temple" },
+    { "name": "ArchAngel", "biome": "Angels & Demons" },
+    { "name": "World Burner", "biome": "Angels & Demons" },
+    { "name": "Dreadscale", "biome": "Monster Egg" },
+    { "name": "Shattered Colossus", "biome": "Rift" }
+  ]
+}

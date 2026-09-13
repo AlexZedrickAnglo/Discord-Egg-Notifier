@@ -1,18 +1,18 @@
 // ──────────────────────────────────────────────────────────────
 //  index.js — Steal An Egg Notifier  (discord.js v14)
 //
-//  Ties together:
+//  Subsystems:
 //    1. Roblox game-update polling      (every 60 s)
 //    2. Scheduled Admin Abuse events    (weekly Saturday cron)
-//    3. Map egg-cycle reset alerts      (every 5 min)
-//    4. Express webhook receiver        (POST /api/egg-spawn)
-//    5. Slash commands                  (/status, /setchannel)
+//    3. Map egg-cycle reset alerts      (every 5 min + 13 s night boost)
+//    4. Express webhook receiver        (POST /api/notify-egg)
+//    5. Slash commands                  (/checkegg, /status, /setchannel)
 // ──────────────────────────────────────────────────────────────
 require('dotenv').config();
 
-const fs   = require('fs');
-const path = require('path');
-const cron = require('node-cron');
+const fs      = require('fs');
+const path    = require('path');
+const cron    = require('node-cron');
 const express = require('express');
 
 const {
@@ -21,18 +21,20 @@ const {
   GatewayIntentBits,
 } = require('discord.js');
 
-const { getGameDetails }    = require('./utils/roblox');
+const { getGameDetails, findEgg } = require('./utils/roblox');
 const {
   buildUpdateEmbed,
   buildEggSpawnEmbed,
   buildEventEmbed,
+  buildCycleResetEmbed,
 } = require('./utils/notifier');
 
 // ═════════════════════════════════════════════════════════════
 //  1.  GLOBAL STATE
 // ═════════════════════════════════════════════════════════════
+const botStartTime    = Date.now();
 let notifyChannelId   = process.env.NOTIFY_CHANNEL_ID;
-let lastKnownUpdated  = null;                // tracks Roblox 'updated' timestamp
+let lastKnownUpdated  = null;
 const EGG_ROLE_ID     = process.env.EGG_ROLE_ID;
 
 /** Setter injected into the /setchannel command. */
@@ -68,11 +70,10 @@ client.on('interactionCreate', async (interaction) => {
   if (!command) return;
 
   try {
-    // Pass shared helpers as a second argument so commands stay decoupled.
-    await command.execute(interaction, { setNotifyChannel });
+    await command.execute(interaction, { setNotifyChannel, botStartTime });
   } catch (err) {
     console.error(`[cmd] /${interaction.commandName} error:`, err);
-    const reply = { content: '❌ An error occurred running that command.', ephemeral: true };
+    const reply = { content: '❌ An error occurred running that command.', flags: 64 };
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(reply);
     } else {
@@ -91,7 +92,6 @@ async function pollGameUpdates() {
 
     const currentUpdated = game.updated;
 
-    // First run — seed the timestamp, don't alert.
     if (lastKnownUpdated === null) {
       lastKnownUpdated = currentUpdated;
       console.log(`[poller] Seeded last-updated → ${currentUpdated}`);
@@ -118,16 +118,16 @@ async function pollGameUpdates() {
 // ═════════════════════════════════════════════════════════════
 
 /**
- * Helper: send an event embed + role ping to the notify channel.
+ * Helper: send an event embed + optional role ping to the notify channel.
  */
-async function sendEventAlert(embedOpts) {
+async function sendEventAlert(embedOpts, ping = true) {
   const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
   if (!channel) return;
 
-  const embed = buildEventEmbed(embedOpts);
-  const ping  = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
+  const embed    = buildEventEmbed(embedOpts);
+  const rolePing = (ping && EGG_ROLE_ID) ? `<@&${EGG_ROLE_ID}>` : '';
 
-  await channel.send({ content: ping, embeds: [embed] });
+  await channel.send({ content: rolePing, embeds: [embed] });
 }
 
 /**
@@ -135,7 +135,7 @@ async function sendEventAlert(embedOpts) {
  * day-of-week + hour (UTC).  dayOfWeek: 0 = Sunday … 6 = Saturday.
  */
 function nextOccurrence(dayOfWeek, hour) {
-  const now = new Date();
+  const now    = new Date();
   const target = new Date(now);
   target.setUTCHours(hour, 0, 0, 0);
 
@@ -145,9 +145,9 @@ function nextOccurrence(dayOfWeek, hour) {
   return Math.floor(target.getTime() / 1000);
 }
 
-// ── A) Admin Abuse / Update — 1-hour warning (Saturday 19:00 UTC) ──
+// ── A) Admin Abuse — 1-hour warning  (Saturday 19:00 UTC) ───
 cron.schedule('0 19 * * 6', () => {
-  const eventUnix = nextOccurrence(6, 20); // event itself is at 20:00 UTC
+  const eventUnix = nextOccurrence(6, 20);
   sendEventAlert({
     title:       '⚠️  Admin Abuse / Update — Starting in 1 Hour!',
     description: 'Get ready! The weekly Admin Abuse event begins soon.',
@@ -156,7 +156,7 @@ cron.schedule('0 19 * * 6', () => {
   });
 }, { timezone: 'UTC' });
 
-// ── B) Admin Abuse / Update — event start (Saturday 20:00 UTC) ─────
+// ── B) Admin Abuse — event start  (Saturday 20:00 UTC) ──────
 cron.schedule('0 20 * * 6', () => {
   const eventUnix = Math.floor(Date.now() / 1000);
   sendEventAlert({
@@ -167,40 +167,46 @@ cron.schedule('0 20 * * 6', () => {
   });
 }, { timezone: 'UTC' });
 
-// ── C) Map egg-cycle reset reminder (every 5 minutes) ──────────────
+// ── C) Map Egg Cycle Reset  (every 5 minutes) ──────────────
+//     Egg spawns reset every 5 min with a 13 s night-boost window.
 cron.schedule('*/5 * * * *', async () => {
   const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
   if (!channel) return;
 
-  const nextResetUnix = Math.floor(Date.now() / 1000) + 300; // 5 min from now
-
-  const embed = buildEventEmbed({
-    title:       '🔁  Egg Cycle Reset',
-    description: 'Map egg cycle has reset — new spawns available!',
-    eventUnix:   nextResetUnix,
-    color:       0x5865F2,
-  });
+  const nextResetUnix = Math.floor(Date.now() / 1000) + 300;
+  const embed = buildCycleResetEmbed(nextResetUnix);
 
   await channel.send({ embeds: [embed] });
+
+  // After 13 seconds, post a follow-up that night boost has ended
+  setTimeout(async () => {
+    try {
+      await channel.send({
+        content: '🌙 **Night Boost window (13 s) has ended.** Normal spawn rates resumed.',
+      });
+    } catch { /* channel may be unavailable */ }
+  }, 13_000);
 });
 
 // ═════════════════════════════════════════════════════════════
-//  5.  EXPRESS WEBHOOK RECEIVER  (POST /api/egg-spawn)
+//  5.  EXPRESS WEBHOOK RECEIVER  (POST /api/notify-egg)
 // ═════════════════════════════════════════════════════════════
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Only ping the alert role for top-tier rarities
-const PING_RARITIES = ['secret', 'eternal', 'divine'];
-
-app.post('/api/egg-spawn', async (req, res) => {
-  const { eggName, rarity, biome, serverId } = req.body ?? {};
+app.post('/api/notify-egg', async (req, res) => {
+  const { eggName, rarity, biome, jobId, image } = req.body ?? {};
 
   if (!eggName) {
     return res.status(400).json({ error: 'Missing required field: eggName' });
   }
+
+  // Auto-match against egg database for enrichment
+  const dbMatch = findEgg(eggName);
+  const finalRarity = rarity  || dbMatch?.rarity || 'Unknown';
+  const finalBiome  = biome   || dbMatch?.biome  || 'Unknown';
 
   try {
     const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
@@ -208,28 +214,35 @@ app.post('/api/egg-spawn', async (req, res) => {
       return res.status(503).json({ error: 'Notification channel not available.' });
     }
 
-    const embed = buildEggSpawnEmbed({ eggName, rarity, biome, serverId });
+    const embed = buildEggSpawnEmbed({
+      eggName,
+      rarity: finalRarity,
+      biome:  finalBiome,
+      jobId,
+      image,
+    });
 
-    // Only ping role if the egg is Secret, Eternal, or Divine
-    const cleanRarity = (rarity || '').toLowerCase().trim();
-    const shouldPing = EGG_ROLE_ID && PING_RARITIES.includes(cleanRarity);
+    // Always ping the alert role for Secret / Eternal / Divine
+    const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
+    const header   = `${rolePing} 🚨 **${finalRarity.toUpperCase()} EGG:** **${eggName}** in **${finalBiome}**!`;
 
-    const messagePayload = { embeds: [embed] };
-    if (shouldPing) {
-      messagePayload.content = `<@&${EGG_ROLE_ID}> 🚨 **${rarity.toUpperCase()} EGG SPAWNED:** **${eggName}**!`;
-    }
+    await channel.send({ content: header, embeds: [embed] });
 
-    await channel.send(messagePayload);
-
-    return res.status(200).json({ ok: true, message: 'Egg spawn alert sent.' });
+    return res.status(200).json({ ok: true, message: 'Egg alert sent.' });
   } catch (err) {
     console.error('[webhook] Error:', err.message);
     return res.status(500).json({ error: 'Failed to send alert.' });
   }
 });
 
-// Simple health check
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+// Legacy route (backwards-compatible with earlier version)
+app.post('/api/egg-spawn', (req, res) => {
+  req.url = '/api/notify-egg';
+  app.handle(req, res);
+});
+
+// Health check
+app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: Date.now() - botStartTime }));
 
 // ═════════════════════════════════════════════════════════════
 //  6.  STARTUP
@@ -238,10 +251,11 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`   Notification channel : ${notifyChannelId}`);
   console.log(`   Alert role           : ${EGG_ROLE_ID ?? '(none)'}`);
+  console.log(`   Egg database         : ${require('./utils/roblox').eggLookup.size} eggs loaded`);
 
   // Start the Roblox update poller (every 60 seconds).
   setInterval(pollGameUpdates, 60_000);
-  pollGameUpdates(); // initial seed
+  pollGameUpdates();
 
   // Start Express
   app.listen(PORT, () => {

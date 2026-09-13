@@ -8,21 +8,20 @@ const { buildStatusEmbed }    = require('../utils/notifier');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('status')
-    .setDescription('Shows live Steal An Egg player count, visits, and last update time.'),
+    .setDescription('Shows bot uptime, monitored Place ID, and current Steal An Egg game stats.'),
 
-  async execute(interaction) {
+  async execute(interaction, { botStartTime }) {
     await interaction.deferReply();
 
     try {
       const game = await getGameDetails();
-      if (!game) {
-        return interaction.editReply({ content: '❌ Could not fetch game data from Roblox.' });
-      }
-      const embed = buildStatusEmbed(game);
+      const embed = buildStatusEmbed(game, botStartTime);
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
       console.error('[/status] Error:', err.message);
-      await interaction.editReply({ content: '❌ Roblox API request failed. Try again later.' });
+      await interaction.editReply({
+        content: '❌ Could not fetch game data from Roblox. Try again later.',
+      });
     }
   },
 };
