@@ -52,9 +52,8 @@ function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image }) {
     .setFooter({ text: 'Steal An Egg Notifier • Egg Spawn Alert' })
     .setTimestamp();
 
-  if (jobId) {
-    embed.addFields({ name: '🖥️ Server', value: `\`${jobId}\``, inline: false });
-  }
+
+
 
   if (image) {
     embed.setThumbnail(image);
