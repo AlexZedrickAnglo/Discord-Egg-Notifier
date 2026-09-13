@@ -25,6 +25,7 @@ const {
   buildUpdateEmbed,
   buildEggSpawnEmbed,
   buildEventEmbed,
+  buildRiftBossEmbed,
 } = require('./utils/notifier');
 
 // ═════════════════════════════════════════════════════════════
@@ -168,15 +169,83 @@ cron.schedule('0 20 * * 6', () => {
 
 
 // ═════════════════════════════════════════════════════════════
-//  5.  EXPRESS WEBHOOK RECEIVER  (POST /api/notify-egg)
+//  5.  EXPRESS WEBHOOK RECEIVER  (POST /api/notify-egg, /api/notify-boss)
 // ═════════════════════════════════════════════════════════════
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
+/**
+ * Helper: Send Rift Boss alert to Discord with role ping.
+ */
+async function sendRiftBossAlert({ bossName, biome, health, timeLimit, image }) {
+  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+  if (!channel) throw new Error('Notification channel not available.');
+
+  const boss        = bossName || 'Rift Boss';
+  const targetBiome = biome || 'Unknown';
+
+  const embed    = buildRiftBossEmbed({ bossName: boss, biome: targetBiome, health, timeLimit, image });
+  const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
+  const header   = `${rolePing} 🌀 ⚔️ **RIFT BOSS SPAWNED:** **${boss}** in **${targetBiome}**!`;
+
+  await channel.send({ content: header, embeds: [embed] });
+}
+
+// Rift Boss alert endpoints
+app.post('/api/notify-boss', async (req, res) => {
+  const { bossName, biome, health, timeLimit, image } = req.body ?? {};
+
+  if (!biome && !bossName) {
+    return res.status(400).json({ error: 'Missing required field: biome or bossName' });
+  }
+
+  try {
+    await sendRiftBossAlert({ bossName, biome, health, timeLimit, image });
+    return res.status(200).json({ ok: true, message: 'Rift boss alert sent.' });
+  } catch (err) {
+    console.error('[webhook/boss] Error:', err.message);
+    return res.status(500).json({ error: err.message || 'Failed to send alert.' });
+  }
+});
+
+app.post('/api/notify-rift', (req, res) => {
+  req.url = '/api/notify-boss';
+  app.handle(req, res);
+});
+
+// Egg spawn alert endpoint
 app.post('/api/notify-egg', async (req, res) => {
-  const { eggName, rarity, biome, jobId, image } = req.body ?? {};
+  const {
+    eggName,
+    bossName,
+    rarity,
+    biome,
+    jobId,
+    image,
+    type,
+    isBoss,
+    health,
+    timeLimit,
+  } = req.body ?? {};
+
+  // If payload is actually a boss/rift event, route appropriately
+  if (isBoss || type === 'boss' || type === 'rift' || bossName) {
+    try {
+      await sendRiftBossAlert({
+        bossName: bossName || eggName,
+        biome,
+        health,
+        timeLimit,
+        image,
+      });
+      return res.status(200).json({ ok: true, message: 'Rift boss alert sent.' });
+    } catch (err) {
+      console.error('[webhook/boss] Error:', err.message);
+      return res.status(500).json({ error: err.message || 'Failed to send alert.' });
+    }
+  }
 
   if (!eggName) {
     return res.status(400).json({ error: 'Missing required field: eggName' });

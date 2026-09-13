@@ -154,6 +154,38 @@ function buildEventEmbed({ title, description, eventUnix, color }) {
     .setTimestamp();
 }
 
+/**
+ * Build a Rift Boss fight alert embed.
+ */
+function buildRiftBossEmbed({ bossName, biome, health, timeLimit, image }) {
+  const name = bossName || 'Rift Boss';
+  const embed = new EmbedBuilder()
+    .setTitle('🌀  Rift Boss Fight Spawned!')
+    .setColor(0x8A2BE2) // Deep Void Purple
+    .setDescription('A dimensional rift has opened! Assemble and defeat the boss.')
+    .addFields(
+      { name: '👹 Boss',  value: `**${name}**`, inline: true },
+      { name: '🗺️ Biome', value: `**${biome || 'Unknown'}**`, inline: true },
+      { name: '⚔️ Event', value: 'Rift Boss Fight', inline: true },
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Rift Event' })
+    .setTimestamp();
+
+  if (health) {
+    embed.addFields({ name: '❤️ Health', value: `${health}`, inline: true });
+  }
+
+  if (timeLimit) {
+    embed.addFields({ name: '⏳ Time Remaining', value: `${timeLimit}`, inline: true });
+  }
+
+  if (image) {
+    embed.setImage(image);
+  }
+
+  return embed;
+}
+
 module.exports = {
   RARITY_COLORS,
   RARITY_EMOJI,
@@ -163,4 +195,5 @@ module.exports = {
   buildEggLookupEmbed,
   buildStatusEmbed,
   buildEventEmbed,
+  buildRiftBossEmbed,
 };
