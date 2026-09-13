@@ -192,6 +192,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
+// Only ping the alert role for top-tier rarities
+const PING_RARITIES = ['secret', 'eternal', 'divine'];
+
 app.post('/api/egg-spawn', async (req, res) => {
   const { eggName, rarity, biome, serverId } = req.body ?? {};
 
@@ -206,9 +209,17 @@ app.post('/api/egg-spawn', async (req, res) => {
     }
 
     const embed = buildEggSpawnEmbed({ eggName, rarity, biome, serverId });
-    const ping  = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
 
-    await channel.send({ content: ping, embeds: [embed] });
+    // Only ping role if the egg is Secret, Eternal, or Divine
+    const cleanRarity = (rarity || '').toLowerCase().trim();
+    const shouldPing = EGG_ROLE_ID && PING_RARITIES.includes(cleanRarity);
+
+    const messagePayload = { embeds: [embed] };
+    if (shouldPing) {
+      messagePayload.content = `<@&${EGG_ROLE_ID}> 🚨 **${rarity.toUpperCase()} EGG SPAWNED:** **${eggName}**!`;
+    }
+
+    await channel.send(messagePayload);
 
     return res.status(200).json({ ok: true, message: 'Egg spawn alert sent.' });
   } catch (err) {

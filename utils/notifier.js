@@ -46,13 +46,16 @@ function buildUpdateEmbed(gameData) {
  * Build a "Rare Egg Spawn" embed from a webhook payload.
  */
 function buildEggSpawnEmbed({ eggName, rarity, biome, serverId }) {
+  const rarityFormatted = rarity ? rarity.toUpperCase() : 'RARE';
   return new EmbedBuilder()
-    .setTitle(`🥚  Rare Egg Spawn — ${eggName}`)
+    .setTitle(`🥚  ${rarityFormatted} Egg Spawned — ${eggName}`)
     .setColor(colorForRarity(rarity))
+    .setDescription(`A **${rarity ?? 'rare'}** egg (**${eggName}**) has spawned!`)
     .addFields(
+      { name: '🥚 Egg Name',  value: `**${eggName}**`, inline: true },
       { name: '✨ Rarity',    value: rarity   ?? 'Unknown', inline: true },
       { name: '🌍 Biome',     value: biome    ?? 'Unknown', inline: true },
-      { name: '🖥️ Server ID', value: serverId ?? 'Unknown', inline: true },
+      { name: '🖥️ Server ID', value: serverId ? `\`${serverId}\`` : 'Unknown', inline: true },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Egg Spawn Alert' })
     .setTimestamp();
