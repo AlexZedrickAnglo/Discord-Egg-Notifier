@@ -4,9 +4,8 @@
 //  Subsystems:
 //    1. Roblox game-update polling      (every 60 s)
 //    2. Scheduled Admin Abuse events    (weekly Saturday cron)
-//    3. Map egg-cycle reset alerts      (every 5 min + 13 s night boost)
-//    4. Express webhook receiver        (POST /api/notify-egg)
-//    5. Slash commands                  (/checkegg, /status, /setchannel)
+//    3. Express webhook receiver        (POST /api/notify-egg)
+//    4. Slash commands                  (/checkegg, /status, /setchannel)
 // ──────────────────────────────────────────────────────────────
 require('dotenv').config();
 
@@ -26,7 +25,6 @@ const {
   buildUpdateEmbed,
   buildEggSpawnEmbed,
   buildEventEmbed,
-  buildCycleResetEmbed,
 } = require('./utils/notifier');
 
 // ═════════════════════════════════════════════════════════════
