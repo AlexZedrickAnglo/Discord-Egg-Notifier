@@ -6,10 +6,14 @@
 -- and immediately sends a webhook to your Railway bot to ping Discord.
 
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local TextChatService = game:GetService("TextChatService")
 
--- ⚠️ REPLACE WITH YOUR RAILWAY DOMAIN:
--- Find this in Railway -> Settings -> Domains (e.g., https://your-project.up.railway.app)
-local BOT_URL = "https://YOUR-RAILWAY-DOMAIN.up.railway.app"
+-- Public Railway URL:
+local BOT_URL = "https://discord-egg-notifier-production.up.railway.app"
+
+-- Cache to avoid duplicate pings within 15 seconds
+local lastAlerts = {}
 
 -- HTTP Request wrapper (compatible with executors like syn.request / http_request / request and HttpService)
 local function httpRequest(url, payload)
@@ -33,6 +37,13 @@ local function httpRequest(url, payload)
 end
 
 local function sendAlert(endpoint, payload)
+    local dedupeKey = (payload.eggName or payload.bossName or "") .. "_" .. (payload.biome or "")
+    local now = os.time()
+    if lastAlerts[dedupeKey] and (now - lastAlerts[dedupeKey] < 15) then
+        return -- Skip duplicate alert
+    end
+    lastAlerts[dedupeKey] = now
+
     local url = BOT_URL .. endpoint
     local success, res = httpRequest(url, payload)
     if success then
@@ -44,11 +55,11 @@ end
 
 -- Handler for announcement text
 local function handleMessage(text)
-    if not text or typeof(text) ~= "string" then return end
+    if not text or typeof(text) ~= "string" or #text < 5 then return end
 
     -- Pattern 1: "A Secret Pure Jellyfish Egg spawned in Angels😇!"
     -- or "An Eternal Ice Dragon Egg spawned in Snow!"
-    local rarity, eggName, biome = string.match(text, "^A[n]?%s+([%a%s]+)%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%.]?$")
+    local rarity, eggName, biome = string.match(text, "A[n]?%s+([%a%s]+)%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%.]?$")
 
     if eggName and biome then
         -- Clean up emoji from biome (e.g. "Angels😇" -> "Angels")
@@ -77,26 +88,50 @@ local function handleMessage(text)
 end
 
 -- ── Hook into Game UI Announcements & Chat ──────────────────
--- 1. Monitor screen text announcements (ScreenGui / BillboardGui)
-game:GetService("CoreGui").DescendantAdded:Connect(function(descendant)
-    if descendant:IsA("TextLabel") then
-        descendant:GetPropertyChangedSignal("Text"):Connect(function()
-            handleMessage(descendant.Text)
-        end)
-        handleMessage(descendant.Text)
+
+-- 1. Hook TextChatService (Modern Roblox chat)
+pcall(function()
+    TextChatService.OnIncomingMessage = function(message)
+        if message and message.Text then
+            handleMessage(message.Text)
+        end
     end
+    TextChatService.MessageReceived:Connect(function(message)
+        if message and message.Text then
+            handleMessage(message.Text)
+        end
+    end)
 end)
 
-local player = game:GetService("Players").LocalPlayer
-if player and player:FindFirstChild("PlayerGui") then
-    player.PlayerGui.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA("TextLabel") then
-            descendant:GetPropertyChangedSignal("Text"):Connect(function()
-                handleMessage(descendant.Text)
+-- 2. Hook Screen TextLabels (Announcements, banners, notifications)
+local function watchContainer(container)
+    if not container then return end
+    for _, desc in ipairs(container:GetDescendants()) do
+        if desc:IsA("TextLabel") then
+            desc:GetPropertyChangedSignal("Text"):Connect(function()
+                handleMessage(desc.Text)
             end)
-            handleMessage(descendant.Text)
+            handleMessage(desc.Text)
+        end
+    end
+    container.DescendantAdded:Connect(function(desc)
+        if desc:IsA("TextLabel") then
+            desc:GetPropertyChangedSignal("Text"):Connect(function()
+                handleMessage(desc.Text)
+            end)
+            handleMessage(desc.Text)
         end
     end)
 end
 
-print("[Notifier] 🚀 Steal An Egg spawn detector loaded!")
+-- Watch PlayerGui and CoreGui
+local player = Players.LocalPlayer
+if player then
+    local playerGui = player:WaitForChild("PlayerGui", 5)
+    if playerGui then watchContainer(playerGui) end
+end
+pcall(function()
+    watchContainer(game:GetService("CoreGui"))
+end)
+
+print("[Notifier] 🚀 Steal An Egg spawn detector loaded & connected to Railway!")
