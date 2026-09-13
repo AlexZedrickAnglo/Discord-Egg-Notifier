@@ -13,8 +13,7 @@
     { "name": "Gargoyle", "biome": "Angels & Demons" },
     { "name": "RazorFang", "biome": "Angels & Demons" },
     { "name": "Pure Jellyfish", "biome": "Angels & Demons" },
-    { "name": "Centaur", "biome": "Angels & Demons" },
-    { "name": "Crocodon", "biome": "Monster Egg" }
+    { "name": "Centaur", "biome": "Angels & Demons" }
   ],
   "Eternal": [
     { "name": "Ice Dragon", "biome": "Snow" },
@@ -26,16 +25,13 @@
     { "name": "Oni Tiger", "biome": "Cherry Blossom" },
     { "name": "Gorilla King", "biome": "Titan Temple" },
     { "name": "Skeleton Horse", "biome": "Angels & Demons" },
-    { "name": "Pegasus", "biome": "Angels & Demons" },
-    { "name": "Krakenoid", "biome": "Monster Egg" }
+    { "name": "Pegasus", "biome": "Angels & Demons" }
   ],
   "Divine": [
     { "name": "Unicorn", "biome": "Cosmic" },
     { "name": "Kitsune", "biome": "Cherry Blossom" },
     { "name": "Nightflame", "biome": "Titan Temple" },
     { "name": "ArchAngel", "biome": "Angels & Demons" },
-    { "name": "World Burner", "biome": "Angels & Demons" },
-    { "name": "Dreadscale", "biome": "Monster Egg" },
-    { "name": "Shattered Colossus", "biome": "Rift" }
+    { "name": "World Burner", "biome": "Angels & Demons" }
   ]
 }
