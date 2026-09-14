@@ -12,7 +12,6 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
-local VirtualUser = game:GetService("VirtualUser")
 
 -- Public Railway URL:
 local BOT_URL = "https://discord-egg-notifier-production.up.railway.app"
@@ -590,15 +589,7 @@ task.spawn(function()
 end)
 task.defer(checkAndNotifyBanner)
 
--- ── 7. Anti-AFK (prevents idle kick) ─────────────────────────
-pcall(function()
-    Players.LocalPlayer.Idled:Connect(function()
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
-    end)
-end)
-
--- ── 8. Send Startup / Execution Alert ────────────────────────
+-- ── 7. Send Startup / Execution Alert ────────────────────────
 local readyOk = sendAlert("/api/notify-ready", {
     account = player and player.Name or "In-Game Client"
 }, 5)
