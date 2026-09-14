@@ -264,6 +264,9 @@ app.post('/api/notify-egg', async (req, res) => {
     isBoss,
     health,
     timeLimit,
+    isBannerEgg,
+    bannerName,
+    requiredForPet,
   } = req.body ?? {};
 
   // If payload is actually a boss/rift event, route appropriately
@@ -304,11 +307,17 @@ app.post('/api/notify-egg', async (req, res) => {
       biome:  finalBiome,
       jobId,
       image,
+      isBannerEgg,
+      bannerName,
+      requiredForPet,
     });
 
-    // Always ping the alert role for Secret / Eternal / Divine
+    // Always ping the alert role for Secret / Eternal / Divine / Banner eggs
     const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
-    const header   = `${rolePing} 🚨 **${finalRarity.toUpperCase()} EGG:** **${eggName}** in **${finalBiome}**!`;
+    const bannerBadge = bannerName
+      ? (requiredForPet ? `⭐ **[SACRIFICE EGG: ${bannerName}]** ` : `⭐ **[BANNER EGG: ${bannerName}]** `)
+      : '';
+    const header   = `${rolePing} ${bannerBadge}🚨 **${finalRarity.toUpperCase()} EGG:** **${eggName}** in **${finalBiome}**!`;
 
     await channel.send({ content: header, embeds: [embed] });
 

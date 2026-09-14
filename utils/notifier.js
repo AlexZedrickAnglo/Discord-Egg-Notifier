@@ -30,15 +30,17 @@ function colorForRarity(rarity) {
  * Build a "Egg Spawn Alert" embed from a webhook payload.
  * Includes a Roblox deep-join link using the jobId.
  */
-function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image }) {
+function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image, isBannerEgg, bannerName, requiredForPet }) {
   const emoji   = RARITY_EMOJI[rarity?.toLowerCase()] ?? '🥚';
-  const color   = colorForRarity(rarity);
+  const color   = (isBannerEgg || bannerName) ? 0x9B59B6 : colorForRarity(rarity);
   const joinUrl = jobId
     ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
     : null;
 
+  const titlePrefix = bannerName ? '⭐ BANNER EGG — ' : '';
+
   const embed = new EmbedBuilder()
-    .setTitle(`${emoji}  ${(rarity ?? 'RARE').toUpperCase()} EGG SPAWNED — ${eggName}`)
+    .setTitle(`${emoji}  ${titlePrefix}${(rarity ?? 'RARE').toUpperCase()} EGG SPAWNED — ${eggName}`)
     .setColor(color)
     .setDescription(
       `A **${rarity ?? 'rare'}** egg has appeared!\n` +
@@ -52,8 +54,12 @@ function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image }) {
     .setFooter({ text: 'Steal An Egg Notifier • Egg Spawn Alert' })
     .setTimestamp();
 
-
-
+  if (bannerName) {
+    const bannerDesc = requiredForPet
+      ? `🥩 **Sacrifice Match:** This egg hatches **${requiredForPet}**, which is required for the active **${bannerName}** banner sacrifice!`
+      : `📜 **Banner Pool:** This egg is part of the active **${bannerName}** banner!`;
+    embed.addFields({ name: '⭐ Active Rift Banner Match', value: bannerDesc, inline: false });
+  }
 
   if (image) {
     embed.setThumbnail(image);

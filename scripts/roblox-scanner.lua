@@ -2,12 +2,14 @@
 -- Steal An Egg - In-Game Egg, Boss & Rift Banner Notifier (Roblox Lua)
 -- ============================================================
 -- Features:
--- 1. Rare Egg Spawns: Detects Secret, Eternal, and Divine eggs
--- 2. Rift Boss Spawns: Detects Rift Boss / Abyss Overlord events
--- 3. Active Rift Banner + Required Pets: Detects Riftborn, Riftbeasts & Shattered Rift
---    and extracts the 3 required sacrifice pets with their respective biomes!
--- 4. Deep-Join Server Link: Sends game.JobId to join the exact server
--- 5. Anti-AFK: Prevents 20-minute idle kicks so your alt stays online
+-- 1. Rare Egg Spawns: Detects Secret, Eternal, Divine & Banner Eggs
+-- 2. Banner Egg Detection: Identifies eggs matching the active banner
+--    or required for the 3-pet sacrifice!
+-- 3. Rift Boss Spawns: Detects Rift Boss / Abyss Overlord events
+-- 4. Active Rift Banner + Required Pets: Detects active banner,
+--    required sacrifice pets, and their biomes!
+-- 5. Deep-Join Server Link: Sends game.JobId to join the exact server
+-- 6. Anti-AFK: Prevents 20-minute idle kicks so your alt stays online
 -- ============================================================
 
 local HttpService = game:GetService("HttpService")
@@ -19,15 +21,24 @@ local VirtualUser = game:GetService("VirtualUser")
 -- Public Railway URL:
 local BOT_URL = "https://discord-egg-notifier-production.up.railway.app"
 
--- Cache to avoid duplicate pings
+-- State tracking
 local lastAlerts = {}
 local lastBannerState = nil
+local lastActiveBanner = nil
+local lastRequiredPets = {}
 
 -- Known Rift Banner pool descriptions
 local BANNER_POOLS = {
     ["Riftborn"] = "🥚 Drops **Riftborn Egg** (45% chance)\n🗺️ Biome Pool: Jungle, Snow, Volcano, Abyss Ocean",
     ["Riftbeasts"] = "🥚 Drops **Riftbeasts Egg** (35% chance)\n🗺️ Biome Pool: Volcano, Abyss Ocean, Prehistoric, Cosmic",
-    ["Shattered Rift"] = "🥚 Drops **Shattered Rift Egg** (20% chance)\n👑 Exclusive Divine: **Shattered Colossus** (0.5% pull rate)\n🗺️ Biome Pool: Prehistoric, Cosmic, Cherry Blossom",
+    ["Shattered Rift"] = "🥚 Drops **Shattered Rift Egg** (20% chance)\n👑 Exclusive Divine: **Shattered Colossus** (0.5% pull rate)\n🗺️ Biome Pool: Prehistoric, Cosmic, Cherry Blossom, Titan Temple",
+}
+
+-- Biomes associated with each banner
+local BANNER_BIOMES = {
+    ["Riftborn"] = { "Jungle", "Snow", "Volcano", "Abyss Ocean" },
+    ["Riftbeasts"] = { "Volcano", "Abyss Ocean", "Prehistoric", "Cosmic" },
+    ["Shattered Rift"] = { "Prehistoric", "Cosmic", "Cherry Blossom", "Titan Temple" },
 }
 
 -- Comprehensive Pet to Biome database for Steal An Egg
@@ -219,6 +230,12 @@ local function checkAndNotifyBanner()
     local banner, pets, timeRem = scanRiftBannerAndPets()
     if not banner then return end
 
+    -- Update active banner and required pets state
+    lastActiveBanner = banner
+    if #pets > 0 then
+        lastRequiredPets = pets
+    end
+
     local petKey = ""
     for _, p in ipairs(pets) do
         petKey = petKey .. "_" .. p.name .. "(" .. p.biome .. ")"
@@ -256,8 +273,19 @@ local function handleMessage(text)
         task.spawn(checkAndNotifyBanner)
     end
 
-    -- Pattern 1: Rare Egg Spawn
+    -- ── Pattern 1: Egg Spawn Announcements ───────────────────
+    -- Try 3-part pattern: "A [Rarity] [EggName] Egg spawned in [Biome]!"
     local rarity, eggName, biome = string.match(text, "A[n]?%s+([%a%s]+)%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%.]?$")
+
+    -- Fallback 2-part pattern: "A [EggName] Egg spawned in [Biome]!"
+    if not eggName or not biome then
+        local e, b = string.match(text, "A[n]?%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%.]?$")
+        if e and b then
+            eggName = e
+            biome = b
+            rarity = (e:lower():find("rift")) and "Rift" or "Special"
+        end
+    end
 
     if eggName and biome then
         local cleanBiome = biome:gsub("[%z\1-\127\194-\244][\128-\191]*", function(c)
@@ -265,23 +293,71 @@ local function handleMessage(text)
             return (b >= 32 and b <= 126) and c or ""
         end):gsub("%s+$", "")
 
+        -- ── Check if this egg is associated with the active banner ──
+        local isBannerEgg = false
+        local matchingBanner = lastActiveBanner
+        local requiredForPet = nil
+
+        if lastActiveBanner then
+            -- A. Check if the egg matches one of the required sacrifice pets!
+            if lastRequiredPets and #lastRequiredPets > 0 then
+                for _, reqPet in ipairs(lastRequiredPets) do
+                    local rLow = reqPet.name:lower()
+                    local eLow = eggName:lower()
+                    if eLow:find(rLow) or rLow:find(eLow) then
+                        isBannerEgg = true
+                        requiredForPet = reqPet.name
+                        matchingBanner = lastActiveBanner
+                        break
+                    end
+                end
+            end
+
+            -- B. Check if this is a Rift Egg (Riftborn, Riftbeasts, Shattered Rift, Secret Rift)
+            if not isBannerEgg and (eggName:lower():find("rift") or text:lower():find("rift egg")) then
+                isBannerEgg = true
+                matchingBanner = lastActiveBanner
+            end
+
+            -- C. Check if the egg spawned in one of the active banner's biomes
+            if not isBannerEgg and BANNER_BIOMES[lastActiveBanner] then
+                for _, bName in ipairs(BANNER_BIOMES[lastActiveBanner]) do
+                    if cleanBiome:lower():find(bName:lower()) then
+                        isBannerEgg = true
+                        matchingBanner = lastActiveBanner
+                        break
+                    end
+                end
+            end
+        end
+
         sendAlert("/api/notify-egg", {
-            eggName = eggName,
-            rarity  = rarity,
-            biome   = cleanBiome
+            eggName        = eggName,
+            rarity         = rarity,
+            biome          = cleanBiome,
+            isBannerEgg    = isBannerEgg,
+            bannerName     = isBannerEgg and matchingBanner or nil,
+            requiredForPet = requiredForPet,
         }, 15)
 
         pcall(function()
+            local notifTitle = requiredForPet
+                and "⭐ BANNER SACRIFICE EGG!"
+                or (isBannerEgg and ("📜 " .. (matchingBanner or "Rift") .. " Egg!") or (rarity .. " Egg Spawned!"))
+            local notifText = requiredForPet
+                and (eggName .. " in " .. cleanBiome .. "\nNeeded for " .. matchingBanner .. "!")
+                or (eggName .. " in " .. cleanBiome)
+
             StarterGui:SetCore("SendNotification", {
-                Title = rarity .. " Egg Spawned!",
-                Text = eggName .. " in " .. cleanBiome,
-                Duration = 5
+                Title = notifTitle,
+                Text = notifText,
+                Duration = 6
             })
         end)
         return
     end
 
-    -- Pattern 2: Rift Boss / Abyss Overlord Spawn
+    -- ── Pattern 2: Rift Boss / Abyss Overlord Spawn ───────────
     local lower = text:lower()
     if (lower:find("rift") or lower:find("abyss")) and lower:find("spawn") then
         local bossName = lower:find("abyss") and "Abyss Overlord" or "Rift Boss"
@@ -373,4 +449,4 @@ pcall(function()
     })
 end)
 
-print("[Notifier] 🚀 Steal An Egg Scanner v2.5 loaded! (Eggs, Rift Bosses, Banners & Pets)")
+print("[Notifier] 🚀 Steal An Egg Scanner v3 loaded! (Eggs, Rift Bosses, Banners & Sacrifice Pets)")
