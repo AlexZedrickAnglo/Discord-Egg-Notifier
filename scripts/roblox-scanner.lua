@@ -124,11 +124,11 @@ end
 
 local function sendAlert(endpoint, payload, dedupeDuration)
     dedupeDuration = dedupeDuration or 15
-    local dedupeKey = (payload.eggName or payload.bossName or payload.bannerName or "") .. "_" .. (payload.biome or "")
+    local dedupeKey = (payload.eggName or payload.bossName or payload.bannerName or payload.account or "") .. "_" .. (payload.biome or "")
     local now = os.time()
 
     if lastAlerts[dedupeKey] and (now - lastAlerts[dedupeKey] < dedupeDuration) then
-        return -- Skip duplicate alert
+        return false -- Skip duplicate alert
     end
     lastAlerts[dedupeKey] = now
 
@@ -137,10 +137,23 @@ local function sendAlert(endpoint, payload, dedupeDuration)
 
     local url = BOT_URL .. endpoint
     local success, res = httpRequest(url, payload)
+
+    local isOk = false
     if success then
-        print("[Notifier] ✅ Alert sent to Discord:", payload.eggName or payload.bossName or payload.bannerName)
+        if typeof(res) == "table" then
+            isOk = (res.StatusCode and res.StatusCode >= 200 and res.StatusCode < 300) or res.Success == true
+        else
+            isOk = true
+        end
+    end
+
+    if isOk then
+        print("[Notifier] ✅ Alert sent to Discord:", payload.eggName or payload.bossName or payload.bannerName or payload.account or "Ready")
+        return true
     else
-        warn("[Notifier] ❌ Failed to send alert:", res)
+        local errMsg = (typeof(res) == "table" and (res.StatusMessage or res.StatusCode or "Failed")) or tostring(res)
+        warn("[Notifier] ❌ Failed to send alert (" .. tostring(endpoint) .. "):", errMsg)
+        return false
     end
 end
 
@@ -246,12 +259,24 @@ local function checkAndNotifyBanner()
         lastBannerState = stateKey
         local poolDetails = BANNER_POOLS[banner] or "Active 3-hour Rift Machine Banner"
 
-        sendAlert("/api/notify-banner", {
+        local bannerOk = sendAlert("/api/notify-banner", {
             bannerName    = banner,
             requiredPets  = pets,
             details       = poolDetails,
             timeRemaining = timeRem,
         }, 120)
+
+        if not bannerOk then
+            local petNames = ""
+            for _, p in ipairs(pets) do
+                petNames = petNames .. p.name .. " (" .. p.biome .. "), "
+            end
+            sendAlert("/api/notify-egg", {
+                eggName = "Banner: " .. banner .. (petNames ~= "" and (" | Pets: " .. petNames:sub(1, -3)) or ""),
+                rarity  = "Rift",
+                biome   = (BANNER_BIOMES[banner] and table.concat(BANNER_BIOMES[banner], ", ")) or "Lobby",
+            }, 120)
+        end
 
         pcall(function()
             local petText = (#pets > 0) and ("Requires: " .. pets[1].name .. " & more") or "Active now!"
@@ -450,8 +475,17 @@ pcall(function()
 end)
 
 -- Send execution confirmation to Discord
-sendAlert("/api/notify-ready", {
+local readyOk = sendAlert("/api/notify-ready", {
     account = player and player.Name or "In-Game Client"
 }, 5)
+
+-- If /api/notify-ready fails (e.g. Railway pending rebuild), fallback to /api/notify-egg!
+if not readyOk then
+    sendAlert("/api/notify-egg", {
+        eggName = "Scanner Connected (" .. (player and player.Name or "In-Game Client") .. ")",
+        rarity  = "System",
+        biome   = "Online"
+    }, 5)
+end
 
 print("[Notifier] 🚀 Steal An Egg Scanner v3.1 loaded! (Eggs, Rift Bosses, Banners & Sacrifice Pets)")
