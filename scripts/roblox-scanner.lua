@@ -1,22 +1,17 @@
 -- ============================================================
 -- Steal An Egg - In-Game Egg, Boss & Rift Banner Notifier (Roblox Lua)
 -- ============================================================
--- Features:
--- 1. Rare Egg Spawns: Detects Secret, Eternal, Divine & Banner Eggs
--- 2. Banner Egg Detection: Identifies eggs matching the active banner
---    or required for the 3-pet sacrifice!
--- 3. Rift Boss Spawns: Detects Rift Boss / Abyss Overlord events
--- 4. Active Rift Banner + Required Pets: Detects active banner,
---    required sacrifice pets, and their biomes!
--- 5. Deep-Join Server Link: Sends game.JobId to join the exact server
--- 6. Anti-AFK: Prevents 20-minute idle kicks so your alt stays online
+-- Stealth & Undetectable:
+-- - Uses 100% passive, read-only event listeners
+-- - Does NOT hook or overwrite TextChatService callbacks (BAC Safe)
+-- - Does NOT access CoreGui or VirtualUser (Anti-Cheat Safe)
+-- - Scans only PlayerGui and relevant lobby models (Zero World Lag)
 -- ============================================================
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
-local VirtualUser = game:GetService("VirtualUser")
 
 -- Public Railway URL:
 local BOT_URL = "https://discord-egg-notifier-production.up.railway.app"
@@ -132,9 +127,7 @@ local function sendAlert(endpoint, payload, dedupeDuration)
     end
     lastAlerts[dedupeKey] = now
 
-    -- Attach server JobId for deep-join link
     payload.jobId = game.JobId
-
     local url = BOT_URL .. endpoint
     local success, res = httpRequest(url, payload)
 
@@ -148,7 +141,7 @@ local function sendAlert(endpoint, payload, dedupeDuration)
     end
 
     if isOk then
-        print("[Notifier] ✅ Alert sent to Discord:", payload.eggName or payload.bossName or payload.bannerName or payload.account or "Ready")
+        print("[Notifier] ✅ Alert sent:", payload.eggName or payload.bossName or payload.bannerName or payload.account or "Ready")
         return true
     else
         local errMsg = (typeof(res) == "table" and (res.StatusMessage or res.StatusCode or "Failed")) or tostring(res)
@@ -227,14 +220,19 @@ local function scanRiftBannerAndPets()
         end
     end
 
-    -- Check PlayerGui
+    -- Check PlayerGui (Safe & fast)
     local player = Players.LocalPlayer
     if player and player:FindFirstChild("PlayerGui") then
         inspectContainer(player.PlayerGui)
     end
 
-    -- Check Workspace (Rift machine and lobby)
-    inspectContainer(workspace)
+    -- Only inspect specific lobby models, NOT entire workspace
+    for _, child in ipairs(workspace:GetChildren()) do
+        local cName = child.Name:lower()
+        if cName:find("rift") or cName:find("machine") or cName:find("lobby") or cName:find("altar") then
+            inspectContainer(child)
+        end
+    end
 
     return detectedBanner, detectedPets, timeRemaining
 end
@@ -266,6 +264,7 @@ local function checkAndNotifyBanner()
             timeRemaining = timeRem,
         }, 120)
 
+        -- If /api/notify-banner 404s (e.g. Railway pending rebuild), fallback to /api/notify-egg
         if not bannerOk then
             local petNames = ""
             for _, p in ipairs(pets) do
@@ -299,10 +298,8 @@ local function handleMessage(text)
     end
 
     -- ── Pattern 1: Egg Spawn Announcements ───────────────────
-    -- Try 3-part pattern: "A [Rarity] [EggName] Egg spawned in [Biome]!"
     local rarity, eggName, biome = string.match(text, "A[n]?%s+([%a%s]+)%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%.]?$")
 
-    -- Fallback 2-part pattern: "A [EggName] Egg spawned in [Biome]!"
     if not eggName or not biome then
         local e, b = string.match(text, "A[n]?%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%.]?$")
         if e and b then
@@ -318,13 +315,11 @@ local function handleMessage(text)
             return (b >= 32 and b <= 126) and c or ""
         end):gsub("%s+$", "")
 
-        -- ── Check if this egg is associated with the active banner ──
         local isBannerEgg = false
         local matchingBanner = lastActiveBanner
         local requiredForPet = nil
 
         if lastActiveBanner then
-            -- A. Check if the egg matches one of the required sacrifice pets!
             if lastRequiredPets and #lastRequiredPets > 0 then
                 for _, reqPet in ipairs(lastRequiredPets) do
                     local rLow = reqPet.name:lower()
@@ -338,13 +333,11 @@ local function handleMessage(text)
                 end
             end
 
-            -- B. Check if this is a Rift Egg (Riftborn, Riftbeasts, Shattered Rift, Secret Rift)
             if not isBannerEgg and (eggName:lower():find("rift") or text:lower():find("rift egg")) then
                 isBannerEgg = true
                 matchingBanner = lastActiveBanner
             end
 
-            -- C. Check if the egg spawned in one of the active banner's biomes
             if not isBannerEgg and BANNER_BIOMES[lastActiveBanner] then
                 for _, bName in ipairs(BANNER_BIOMES[lastActiveBanner]) do
                     if cleanBiome:lower():find(bName:lower()) then
@@ -403,13 +396,10 @@ local function handleMessage(text)
     end
 end
 
--- ── 5. Hook Listeners ────────────────────────────────────────
+-- ── 5. Passive, Safe Listeners (Zero Anti-Cheat Footprint) ───
+
+-- Read-only chat message event (Does NOT overwrite OnIncomingMessage)
 pcall(function()
-    TextChatService.OnIncomingMessage = function(message)
-        if message and message.Text then
-            handleMessage(message.Text)
-        end
-    end
     TextChatService.MessageReceived:Connect(function(message)
         if message and message.Text then
             handleMessage(message.Text)
@@ -417,6 +407,7 @@ pcall(function()
     end)
 end)
 
+-- Safe UI Watcher (Watches only PlayerGui, NEVER CoreGui)
 local function watchContainer(container)
     if not container then return end
     for _, desc in ipairs(container:GetDescendants()) do
@@ -442,9 +433,6 @@ if player then
     local playerGui = player:WaitForChild("PlayerGui", 5)
     if playerGui then watchContainer(playerGui) end
 end
-pcall(function()
-    watchContainer(game:GetService("CoreGui"))
-end)
 
 -- ── 6. Periodic Rift Banner & Pets Scanner (every 30 seconds) 
 task.spawn(function()
@@ -454,32 +442,12 @@ task.spawn(function()
 end)
 task.defer(checkAndNotifyBanner)
 
--- ── 7. Anti-AFK (Prevents 20-minute idle kick on alt account) ─
-if player then
-    player.Idled:Connect(function()
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new())
-            print("[Notifier] ⏰ Anti-AFK tick triggered (staying active).")
-        end)
-    end)
-end
-
--- In-game popup confirmation
-pcall(function()
-    StarterGui:SetCore("SendNotification", {
-        Title = "Egg & Rift Notifier Active!",
-        Text = "Connected to Railway bot.\nTracking eggs, bosses & rift banner pets!",
-        Duration = 6
-    })
-end)
-
--- Send execution confirmation to Discord
+-- ── 7. Send Startup / Execution Alert ────────────────────────
 local readyOk = sendAlert("/api/notify-ready", {
     account = player and player.Name or "In-Game Client"
 }, 5)
 
--- If /api/notify-ready fails (e.g. Railway pending rebuild), fallback to /api/notify-egg!
+-- If /api/notify-ready fails (e.g. Railway pending rebuild), fallback to /api/notify-egg
 if not readyOk then
     sendAlert("/api/notify-egg", {
         eggName = "Scanner Connected (" .. (player and player.Name or "In-Game Client") .. ")",
@@ -488,4 +456,13 @@ if not readyOk then
     }, 5)
 end
 
-print("[Notifier] 🚀 Steal An Egg Scanner v3.1 loaded! (Eggs, Rift Bosses, Banners & Sacrifice Pets)")
+-- In-game popup confirmation
+pcall(function()
+    StarterGui:SetCore("SendNotification", {
+        Title = "Egg Notifier Active!",
+        Text = "Connected to Railway bot.\nWatching eggs, bosses & rift banners!",
+        Duration = 6
+    })
+end)
+
+print("[Notifier] 🚀 Steal An Egg Scanner v3.2 (Stealth Mode) loaded!")
