@@ -189,7 +189,7 @@ function buildRiftBossEmbed({ bossName, biome, health, timeLimit, image }) {
 /**
  * Build a Rift Banner rotation embed.
  */
-function buildBannerEmbed({ bannerName, details, jobId }) {
+function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jobId }) {
   const name = bannerName || 'Rift Banner';
   const joinUrl = jobId
     ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
@@ -203,14 +203,24 @@ function buildBannerEmbed({ bannerName, details, jobId }) {
       (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : '')
     )
     .addFields(
-      { name: '🏷️ Active Banner',   value: `**${name}**`,                  inline: true },
-      { name: '⏳ Rotation Cycle',  value: 'Rotates every 3 hours',        inline: true },
+      { name: '🏷️ Active Banner',   value: `**${name}**`, inline: true },
+      { name: '⏳ Rotation Cycle',  value: timeRemaining ? `⏳ ${timeRemaining}` : 'Rotates every 3 hours', inline: true },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Rift Machine Banner' })
     .setTimestamp();
 
+  if (Array.isArray(requiredPets) && requiredPets.length > 0) {
+    const petLines = requiredPets.map((pet, idx) => {
+      const pName = typeof pet === 'string' ? pet : pet.name;
+      const pBiome = (typeof pet === 'object' && pet.biome) ? ` *(🗺️ ${pet.biome})*` : '';
+      return `**${idx + 1}.** 🐾 **${pName}**${pBiome}`;
+    }).join('\n');
+
+    embed.addFields({ name: '🥩 Required Pets for Sacrifice', value: petLines, inline: false });
+  }
+
   if (details) {
-    embed.addFields({ name: '🎁 Egg & Pet Pool', value: details, inline: false });
+    embed.addFields({ name: '🎁 Egg & Reward Info', value: details, inline: false });
   }
 
   return embed;

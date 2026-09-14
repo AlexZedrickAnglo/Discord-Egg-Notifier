@@ -218,7 +218,7 @@ app.post('/api/notify-rift', (req, res) => {
 
 // Rift Machine Banner alert endpoint
 app.post('/api/notify-banner', async (req, res) => {
-  const { bannerName, details, jobId } = req.body ?? {};
+  const { bannerName, requiredPets, details, timeRemaining, jobId } = req.body ?? {};
 
   if (!bannerName) {
     return res.status(400).json({ error: 'Missing required field: bannerName' });
@@ -228,9 +228,20 @@ app.post('/api/notify-banner', async (req, res) => {
     const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
     if (!channel) throw new Error('Notification channel not available.');
 
-    const embed    = buildBannerEmbed({ bannerName, details, jobId });
+    const embed    = buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jobId });
     const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
-    const header   = `${rolePing} 📜 **ACTIVE RIFT BANNER:** **${bannerName}** is now active at the Rift Machine!`;
+
+    let petSummary = '';
+    if (Array.isArray(requiredPets) && requiredPets.length > 0) {
+      const summaryList = requiredPets.map(p => {
+        const name = typeof p === 'string' ? p : p.name;
+        const biome = (typeof p === 'object' && p.biome) ? ` (${p.biome})` : '';
+        return `**${name}**${biome}`;
+      }).join(' • ');
+      petSummary = `\n🥩 **Required Pets:** ${summaryList}`;
+    }
+
+    const header = `${rolePing} 📜 **ACTIVE RIFT BANNER:** **${bannerName}** is now active at the Rift Machine!${petSummary}`;
 
     await channel.send({ content: header, embeds: [embed] });
     return res.status(200).json({ ok: true, message: 'Banner alert sent.' });
