@@ -19,6 +19,7 @@ local BOT_URL = "https://discord-egg-notifier-production.up.railway.app"
 -- State tracking
 local lastAlerts = {}
 local lastBannerState = nil
+local lastBannerNotifyTime = 0
 local lastActiveBanner = nil
 local lastRequiredPets = {}
 
@@ -91,6 +92,14 @@ local PET_TO_BIOME = {
     -- Angels & Demons
     ["Imp"] = "Angels & Demons", ["Cherub"] = "Angels & Demons", ["Seraph"] = "Angels & Demons", ["Demon"] = "Angels & Demons", ["Angel"] = "Angels & Demons", ["Fallen Angel"] = "Angels & Demons",
 }
+
+-- ── 0. Rich Text Stripper ───────────────────────────────────
+-- Roblox TextLabels with RichText enabled contain HTML-like tags
+-- (e.g. <font color="#ff0">Secret</font>) that break pattern matching.
+local function stripRichText(text)
+    if not text then return text end
+    return text:gsub("<[^>]+>", "")
+end
 
 -- ── 1. HTTP Request Wrapper ──────────────────────────────────
 local function httpRequest(url, payload)
@@ -201,7 +210,7 @@ local function scanRiftBannerAndPets()
         if not container then return end
         for _, desc in ipairs(container:GetDescendants()) do
             if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and desc.Text and #desc.Text > 0 then
-                local txt = desc.Text
+                local txt = stripRichText(desc.Text)
 
                 -- Active banner: "(Now)" marker in rotation chances (most reliable)
                 if not bannerFromNow then
@@ -328,6 +337,10 @@ local function checkAndNotifyBanner()
     local stateKey = banner .. petKey
 
     if stateKey ~= lastBannerState then
+        -- Prevent duplicate notifications within 60 seconds
+        local now = os.time()
+        if (now - lastBannerNotifyTime) < 60 then return end
+        lastBannerNotifyTime = now
         lastBannerState = stateKey
         local poolDetails = BANNER_POOLS[banner] or "Active 3-hour Rift Machine Banner"
 
@@ -374,6 +387,8 @@ end
 -- ── 4. Chat & Screen Announcement Handler ────────────────────
 local function handleMessage(text)
     if not text or typeof(text) ~= "string" or #text < 5 then return end
+
+    -- Strip Roblox Rich Text formatting tags (e.g. <font color="#ff0">)</n    text = stripRichText(text)
 
     -- Check if announcement is about banner change
     if text:find("Rift") or text:find("Banner") or text:find("banner") then
