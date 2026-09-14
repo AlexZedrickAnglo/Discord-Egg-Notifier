@@ -251,17 +251,7 @@ app.post('/api/notify-banner', async (req, res) => {
     const embed    = buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jobId });
     const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
 
-    let petSummary = '';
-    if (Array.isArray(requiredPets) && requiredPets.length > 0) {
-      const summaryList = requiredPets.map(p => {
-        const name = typeof p === 'string' ? p : p.name;
-        const biome = (typeof p === 'object' && p.biome) ? ` (${p.biome})` : '';
-        return `**${name}**${biome}`;
-      }).join(' • ');
-      petSummary = `\n🥩 **Required Pets:** ${summaryList}`;
-    }
-
-    const header = `${rolePing} 📜 **ACTIVE RIFT BANNER:** **${bannerName}** is now active at the Rift Machine!${petSummary}`;
+    const header = `${rolePing} 📜 **ACTIVE RIFT BANNER:** **${bannerName}** is now active at the Rift Machine!`;
 
     await channel.send({ content: header, embeds: [embed] });
     return res.status(200).json({ ok: true, message: 'Banner alert sent.' });

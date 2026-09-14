@@ -333,11 +333,7 @@ local function checkAndNotifyBanner()
         lastRequiredPets = pets
     end
 
-    local petKey = ""
-    for _, p in ipairs(pets) do
-        petKey = petKey .. "_" .. p.name .. "(" .. p.biome .. ")"
-    end
-    local stateKey = banner .. petKey
+    local stateKey = banner
 
     if stateKey ~= lastBannerState then
         -- Prevent duplicate notifications within 60 seconds
@@ -349,38 +345,23 @@ local function checkAndNotifyBanner()
 
         local bannerOk = sendAlert("/api/notify-banner", {
             bannerName    = banner,
-            requiredPets  = pets,
             details       = poolDetails,
             timeRemaining = timeRem,
         }, 120)
 
         -- If /api/notify-banner 404s (e.g. Railway pending rebuild), fallback to /api/notify-egg
         if not bannerOk then
-            local petNames = ""
-            for _, p in ipairs(pets) do
-                petNames = petNames .. p.name .. " (" .. p.biome .. "), "
-            end
-            -- Build biome list from dynamically-detected pets instead of hardcoded table
-            local biomeStr = "Lobby"
-            if #pets > 0 then
-                local biomes = {}
-                for _, p in ipairs(pets) do
-                    if p.biome then table.insert(biomes, p.biome) end
-                end
-                if #biomes > 0 then biomeStr = table.concat(biomes, ", ") end
-            end
             sendAlert("/api/notify-egg", {
-                eggName = "Banner: " .. banner .. (petNames ~= "" and (" | Pets: " .. petNames:sub(1, -3)) or ""),
+                eggName = "Banner: " .. banner,
                 rarity  = "Rift",
-                biome   = biomeStr,
+                biome   = "Lobby",
             }, 120)
         end
 
         pcall(function()
-            local petText = (#pets > 0) and ("Requires: " .. pets[1].name .. " & more") or "Active now!"
             StarterGui:SetCore("SendNotification", {
                 Title = "Rift Banner: " .. banner,
-                Text = petText,
+                Text = "Active now at Rift Machine!",
                 Duration = 6
             })
         end)

@@ -215,15 +215,6 @@ function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jo
     .setFooter({ text: 'Steal An Egg Notifier • Rift Machine Banner' })
     .setTimestamp();
 
-  if (Array.isArray(requiredPets) && requiredPets.length > 0) {
-    const petLines = requiredPets.map((pet, idx) => {
-      const pName = typeof pet === 'string' ? pet : pet.name;
-      const pBiome = (typeof pet === 'object' && pet.biome) ? ` *(🗺️ ${pet.biome})*` : '';
-      return `**${idx + 1}.** 🐾 **${pName}**${pBiome}`;
-    }).join('\n');
-
-    embed.addFields({ name: '🥩 Required Pets for Sacrifice', value: petLines, inline: false });
-  }
 
   if (details) {
     embed.addFields({ name: '🎁 Egg & Reward Info', value: details, inline: false });
