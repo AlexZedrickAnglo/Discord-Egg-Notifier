@@ -172,11 +172,30 @@ local function resolveBiomeForPet(petName, rawText)
     return "Unknown Biome"
 end
 
--- ── 3. Rift Machine & Banner Scanner ─────────────────────────
+-- ── 3. Rift Machine & Banner Scanner (Dynamic UI Reading) ────
+-- Reads actual UI elements instead of matching hardcoded names:
+--   1. Active banner from "(Now)" marker in rotation list
+--   2. Fallback: "X Banner" title text
+--   3. Required pets from "Found In [Biome]" labels + sibling pet names
+--   4. Timer from "Rotates in:" text
+
+local RARITY_FILTER = {
+    legendary = true, mythic = true, cosmic = true,
+    secret = true, eternal = true, divine = true,
+    rare = true, uncommon = true, common = true,
+    epic = true, ultra = true,
+}
+local ACTION_FILTER = {
+    ["return"] = true, add = true, equip = true,
+    remove = true, sell = true, buy = true, use = true,
+}
+
 local function scanRiftBannerAndPets()
-    local detectedBanner = nil
+    local bannerFromNow = nil   -- from "(Now)" marker (most reliable)
+    local bannerFromTitle = nil -- from "X Banner" title text
     local detectedPets = {}
     local timeRemaining = nil
+    local foundInLabels = {}    -- TextLabels with "Found In [Biome]"
 
     local function inspectContainer(container)
         if not container then return end
@@ -184,37 +203,43 @@ local function scanRiftBannerAndPets()
             if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and desc.Text and #desc.Text > 0 then
                 local txt = desc.Text
 
-                -- Check for banner name
-                if not detectedBanner then
-                    if txt:find("Shattered Rift") then
-                        detectedBanner = "Shattered Rift"
-                    elseif txt:find("Riftbeasts") then
-                        detectedBanner = "Riftbeasts"
-                    elseif txt:find("Riftborn") then
-                        detectedBanner = "Riftborn"
+                -- Active banner: "(Now)" marker in rotation chances (most reliable)
+                if not bannerFromNow then
+                    local nowMatch = txt:match("(.-)%s*%(Now%)") 
+                    if nowMatch then
+                        local clean = nowMatch:gsub("^%s+", ""):gsub("%s+$", "")
+                        if #clean > 0 then
+                            bannerFromNow = clean
+                        end
                     end
                 end
 
-                -- Check for timer
-                local timeMatch = txt:match("%d%d?:%d%d:%d%d") or txt:match("%d+h%s*%d+m")
-                if timeMatch and not timeRemaining then
-                    timeRemaining = timeMatch
-                end
-
-                -- Check for pet names
-                for pName, _ in pairs(PET_TO_BIOME) do
-                    if #pName > 3 and txt:lower():find(pName:lower()) then
-                        local alreadyAdded = false
-                        for _, p in ipairs(detectedPets) do
-                            if p.name == pName then alreadyAdded = true break end
-                        end
-                        if not alreadyAdded and #detectedPets < 3 then
-                            table.insert(detectedPets, {
-                                name = pName,
-                                biome = resolveBiomeForPet(pName, txt)
-                            })
+                -- Banner fallback: "X Banner" title (skip rotation % entries)
+                if not bannerFromTitle and txt:find("Banner") and not txt:find("%%") and not txt:find("Rotation") and not txt:find("Chances") then
+                    local bMatch = txt:match("(.-)%s+Banner")
+                    if bMatch then
+                        local clean = bMatch:gsub("^%s+", ""):gsub("%s+$", "")
+                        if #clean > 0 then
+                            bannerFromTitle = clean
                         end
                     end
+                end
+
+                -- Rotation timer: "Rotates in: Xm Xs"
+                if not timeRemaining then
+                    local timer = txt:match("Rotates%s+in:%s*(.+)")
+                    if timer then
+                        timeRemaining = timer:gsub("^%s+", ""):gsub("%s+$", "")
+                    end
+                end
+
+                -- "Found In [Biome]" → marks a pet slot in the Rift UI
+                local foundBiome = txt:match("Found%s+[Ii]n%s+%[(.-)%]")
+                if foundBiome then
+                    table.insert(foundInLabels, {
+                        biome = foundBiome,
+                        obj = desc,
+                    })
                 end
             end
         end
@@ -234,7 +259,56 @@ local function scanRiftBannerAndPets()
         end
     end
 
-    return detectedBanner, detectedPets, timeRemaining
+    -- Resolve pet names from "Found In" labels by checking sibling TextLabels
+    -- Each pet card frame contains: pet name, rarity, action button, "Found In [X]"
+    for _, entry in ipairs(foundInLabels) do
+        local petName = nil
+        local searchNode = entry.obj.Parent
+        -- Walk up 1-2 levels to find the pet card container
+        for depth = 1, 2 do
+            if not searchNode or petName then break end
+            for _, child in ipairs(searchNode:GetChildren()) do
+                if child:IsA("TextLabel") and child ~= entry.obj and child.Text then
+                    local t = child.Text:gsub("^%s+", ""):gsub("%s+$", "")
+                    local tLow = t:lower()
+                    if #t > 1
+                        and not RARITY_FILTER[tLow]
+                        and not ACTION_FILTER[tLow]
+                        and not t:match("^%d")
+                        and not t:find("Found")
+                        and not t:find("Pet")
+                        and not t:find("%%")
+                        and not t:find("Banner")
+                        and not t:find("Rotation")
+                        and not t:find("Rotates")
+                        and not t:find("Chances")
+                        and not t:find("Current")
+                        and not t:find("The Rift")
+                    then
+                        petName = t
+                        break
+                    end
+                end
+            end
+            searchNode = searchNode.Parent
+        end
+
+        if petName then
+            local alreadyAdded = false
+            for _, p in ipairs(detectedPets) do
+                if p.name == petName then alreadyAdded = true break end
+            end
+            if not alreadyAdded then
+                table.insert(detectedPets, {
+                    name = petName,
+                    biome = entry.biome
+                })
+            end
+        end
+    end
+
+    local finalBanner = bannerFromNow or bannerFromTitle
+    return finalBanner, detectedPets, timeRemaining
 end
 
 local function checkAndNotifyBanner()
@@ -270,10 +344,19 @@ local function checkAndNotifyBanner()
             for _, p in ipairs(pets) do
                 petNames = petNames .. p.name .. " (" .. p.biome .. "), "
             end
+            -- Build biome list from dynamically-detected pets instead of hardcoded table
+            local biomeStr = "Lobby"
+            if #pets > 0 then
+                local biomes = {}
+                for _, p in ipairs(pets) do
+                    if p.biome then table.insert(biomes, p.biome) end
+                end
+                if #biomes > 0 then biomeStr = table.concat(biomes, ", ") end
+            end
             sendAlert("/api/notify-egg", {
                 eggName = "Banner: " .. banner .. (petNames ~= "" and (" | Pets: " .. petNames:sub(1, -3)) or ""),
                 rarity  = "Rift",
-                biome   = (BANNER_BIOMES[banner] and table.concat(BANNER_BIOMES[banner], ", ")) or "Lobby",
+                biome   = biomeStr,
             }, 120)
         end
 
@@ -338,9 +421,10 @@ local function handleMessage(text)
                 matchingBanner = lastActiveBanner
             end
 
-            if not isBannerEgg and BANNER_BIOMES[lastActiveBanner] then
-                for _, bName in ipairs(BANNER_BIOMES[lastActiveBanner]) do
-                    if cleanBiome:lower():find(bName:lower()) then
+            -- Use dynamically-detected pet biomes instead of hardcoded BANNER_BIOMES
+            if not isBannerEgg and lastRequiredPets and #lastRequiredPets > 0 then
+                for _, reqPet in ipairs(lastRequiredPets) do
+                    if reqPet.biome and cleanBiome:lower():find(reqPet.biome:lower()) then
                         isBannerEgg = true
                         matchingBanner = lastActiveBanner
                         break
