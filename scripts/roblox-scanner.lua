@@ -22,6 +22,8 @@ local lastBannerState = nil
 local lastBannerNotifyTime = 0
 local lastActiveBanner = nil
 local lastRequiredPets = {}
+local recentMessages = {}       -- Message-level dedupe cache
+local watchedElements = {}      -- Track already-hooked UI elements
 
 -- Known Rift Banner pool descriptions
 local BANNER_POOLS = {
@@ -388,7 +390,24 @@ end
 local function handleMessage(text)
     if not text or typeof(text) ~= "string" or #text < 5 then return end
 
-    -- Strip Roblox Rich Text formatting tags (e.g. <font color="#ff0">)</n    text = stripRichText(text)
+    -- Strip Roblox Rich Text formatting tags (e.g. <font color="#ff0">)
+    text = stripRichText(text)
+
+    -- Message-level dedupe: prevent the same text from being processed
+    -- twice when both chat and UI watcher fire for the same spawn
+    local msgKey = text:lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    local now = os.time()
+    if recentMessages[msgKey] and (now - recentMessages[msgKey] < 30) then
+        return -- Already processed this exact message
+    end
+    recentMessages[msgKey] = now
+
+    -- Periodically clean expired entries
+    if math.random(1, 5) == 1 then
+        for k, t in pairs(recentMessages) do
+            if now - t > 30 then recentMessages[k] = nil end
+        end
+    end
 
     -- Check if announcement is about banner change
     if text:find("Rift") or text:find("Banner") or text:find("banner") then
@@ -506,37 +525,85 @@ pcall(function()
     end)
 end)
 
--- Safe UI Watcher (Watches only PlayerGui, NEVER CoreGui)
+-- Helper: check if a descendant is a text element we should watch
+local function isTextElement(obj)
+    return obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")
+end
+
+-- Hook a single text element's Text property (only once per element)
+local function hookTextElement(desc)
+    if watchedElements[desc] then return end
+    watchedElements[desc] = true
+    pcall(function()
+        desc:GetPropertyChangedSignal("Text"):Connect(function()
+            handleMessage(desc.Text)
+        end)
+    end)
+    -- Process current text immediately
+    if desc.Text and #desc.Text > 0 then
+        handleMessage(desc.Text)
+    end
+end
+
+-- Safe UI Watcher: hooks all text elements in a container + future additions
 local function watchContainer(container)
     if not container then return end
     for _, desc in ipairs(container:GetDescendants()) do
-        if desc:IsA("TextLabel") then
-            desc:GetPropertyChangedSignal("Text"):Connect(function()
-                handleMessage(desc.Text)
-            end)
-            handleMessage(desc.Text)
+        if isTextElement(desc) then
+            hookTextElement(desc)
         end
     end
     container.DescendantAdded:Connect(function(desc)
-        if desc:IsA("TextLabel") then
-            desc:GetPropertyChangedSignal("Text"):Connect(function()
-                handleMessage(desc.Text)
-            end)
-            handleMessage(desc.Text)
+        if isTextElement(desc) then
+            hookTextElement(desc)
         end
     end)
 end
 
+-- Watch PlayerGui (main source of in-game announcements)
 local player = Players.LocalPlayer
 if player then
     local playerGui = player:WaitForChild("PlayerGui", 5)
     if playerGui then watchContainer(playerGui) end
 end
 
+-- Watch workspace for BillboardGui / SurfaceGui announcements
+pcall(function()
+    workspace.DescendantAdded:Connect(function(desc)
+        if isTextElement(desc) then
+            hookTextElement(desc)
+        end
+    end)
+    -- Scan existing workspace text (only in rift/lobby areas to avoid lag)
+    for _, child in ipairs(workspace:GetChildren()) do
+        local cName = child.Name:lower()
+        if cName:find("rift") or cName:find("lobby") or cName:find("spawn")
+           or cName:find("announce") or cName:find("egg") or cName:find("event") then
+            for _, desc in ipairs(child:GetDescendants()) do
+                if isTextElement(desc) then
+                    hookTextElement(desc)
+                end
+            end
+        end
+    end
+end)
+
 -- ── 6. Periodic Rift Banner & Pets Scanner (every 30 seconds) 
+-- Also re-scans PlayerGui for any new text elements that were missed
 task.spawn(function()
     while task.wait(30) do
         pcall(checkAndNotifyBanner)
+        -- Re-scan PlayerGui for new text elements
+        pcall(function()
+            local p = Players.LocalPlayer
+            if p and p:FindFirstChild("PlayerGui") then
+                for _, desc in ipairs(p.PlayerGui:GetDescendants()) do
+                    if isTextElement(desc) then
+                        hookTextElement(desc)
+                    end
+                end
+            end
+        end)
     end
 end)
 task.defer(checkAndNotifyBanner)
