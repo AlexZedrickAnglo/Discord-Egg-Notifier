@@ -232,6 +232,30 @@ function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jo
   return embed;
 }
 
+/**
+ * Build a Scanner Execution / Connection embed.
+ */
+function buildScannerReadyEmbed({ account, jobId }) {
+  const joinUrl = jobId
+    ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
+    : null;
+
+  return new EmbedBuilder()
+    .setTitle('🚀  In-Game Scanner Connected!')
+    .setColor(0x57F287) // Bright Green
+    .setDescription(
+      `Your in-game scanner was **executed successfully** and is actively monitoring for egg spawns, rift bosses & banner rotations!\n` +
+      (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : '')
+    )
+    .addFields(
+      { name: '👤 Account',   value: `\`${account || 'Roblox Client'}\``, inline: true },
+      { name: '📡 Status',    value: '🟢 Active & Listening',             inline: true },
+      { name: '🎮 Server ID', value: `\`${jobId ? (jobId.slice(0, 16) + '...') : 'Local'}\``, inline: true },
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Scanner Status' })
+    .setTimestamp();
+}
+
 module.exports = {
   RARITY_COLORS,
   RARITY_EMOJI,
@@ -243,4 +267,5 @@ module.exports = {
   buildEventEmbed,
   buildRiftBossEmbed,
   buildBannerEmbed,
+  buildScannerReadyEmbed,
 };

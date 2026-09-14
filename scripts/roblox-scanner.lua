@@ -449,4 +449,9 @@ pcall(function()
     })
 end)
 
-print("[Notifier] 🚀 Steal An Egg Scanner v3 loaded! (Eggs, Rift Bosses, Banners & Sacrifice Pets)")
+-- Send execution confirmation to Discord
+sendAlert("/api/notify-ready", {
+    account = player and player.Name or "In-Game Client"
+}, 5)
+
+print("[Notifier] 🚀 Steal An Egg Scanner v3.1 loaded! (Eggs, Rift Bosses, Banners & Sacrifice Pets)")

@@ -27,6 +27,7 @@ const {
   buildEventEmbed,
   buildRiftBossEmbed,
   buildBannerEmbed,
+  buildScannerReadyEmbed,
 } = require('./utils/notifier');
 
 // ═════════════════════════════════════════════════════════════
@@ -214,6 +215,25 @@ app.post('/api/notify-boss', async (req, res) => {
 app.post('/api/notify-rift', (req, res) => {
   req.url = '/api/notify-boss';
   app.handle(req, res);
+});
+
+// Scanner client connected/ready alert endpoint
+app.post('/api/notify-ready', async (req, res) => {
+  const { account, jobId } = req.body ?? {};
+
+  try {
+    const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+    if (!channel) throw new Error('Notification channel not available.');
+
+    const embed  = buildScannerReadyEmbed({ account, jobId });
+    const header = `🚀 **SCANNER EXECUTED:** Account **${account || 'Roblox Client'}** is now online and scanning!`;
+
+    await channel.send({ content: header, embeds: [embed] });
+    return res.status(200).json({ ok: true, message: 'Ready alert sent.' });
+  } catch (err) {
+    console.error('[webhook/ready] Error:', err.message);
+    return res.status(500).json({ error: err.message || 'Failed to send alert.' });
+  }
 });
 
 // Rift Machine Banner alert endpoint
