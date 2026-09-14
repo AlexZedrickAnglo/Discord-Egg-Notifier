@@ -26,6 +26,7 @@ const {
   buildEggSpawnEmbed,
   buildEventEmbed,
   buildRiftBossEmbed,
+  buildBannerEmbed,
 } = require('./utils/notifier');
 
 // ═════════════════════════════════════════════════════════════
@@ -213,6 +214,30 @@ app.post('/api/notify-boss', async (req, res) => {
 app.post('/api/notify-rift', (req, res) => {
   req.url = '/api/notify-boss';
   app.handle(req, res);
+});
+
+// Rift Machine Banner alert endpoint
+app.post('/api/notify-banner', async (req, res) => {
+  const { bannerName, details, jobId } = req.body ?? {};
+
+  if (!bannerName) {
+    return res.status(400).json({ error: 'Missing required field: bannerName' });
+  }
+
+  try {
+    const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+    if (!channel) throw new Error('Notification channel not available.');
+
+    const embed    = buildBannerEmbed({ bannerName, details, jobId });
+    const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
+    const header   = `${rolePing} 📜 **ACTIVE RIFT BANNER:** **${bannerName}** is now active at the Rift Machine!`;
+
+    await channel.send({ content: header, embeds: [embed] });
+    return res.status(200).json({ ok: true, message: 'Banner alert sent.' });
+  } catch (err) {
+    console.error('[webhook/banner] Error:', err.message);
+    return res.status(500).json({ error: err.message || 'Failed to send alert.' });
+  }
 });
 
 // Egg spawn alert endpoint
