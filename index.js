@@ -45,6 +45,80 @@ const BOSS_DEDUPE_MS    = 120_000; // 2 minutes lockout
 const recentEggAlerts   = new Map();
 const EGG_DEDUPE_MS     = 15_000;  // 15 seconds lockout
 
+let predictionChannelId     = process.env.PREDICTION_CHANNEL_ID || '1550126931100303480';
+let livePredictionMessageId = null;
+const PREDICTION_STATE_FILE = path.join(__dirname, 'data', 'prediction-state.json');
+
+function loadPredictionState() {
+  try {
+    if (fs.existsSync(PREDICTION_STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PREDICTION_STATE_FILE, 'utf8'));
+      if (data && data.messageId) {
+        livePredictionMessageId = data.messageId;
+      }
+    }
+  } catch (err) {
+    console.error('[prediction] Error loading state:', err.message);
+  }
+}
+
+function savePredictionState(state) {
+  try {
+    fs.writeFileSync(PREDICTION_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[prediction] Error saving state:', err.message);
+  }
+}
+
+loadPredictionState();
+
+/**
+ * Post or update the live prediction display in the dedicated channel (1550126931100303480).
+ */
+async function updatePredictionChannel(forceNew = false) {
+  if (!predictionChannelId) return;
+
+  try {
+    const channel = await client.channels.fetch(predictionChannelId).catch(() => null);
+    if (!channel) {
+      console.warn(`[prediction] Channel ${predictionChannelId} not found or inaccessible.`);
+      return;
+    }
+
+    const prediction = predictor.getPrediction(currentActiveBanner);
+    const embed = buildPredictionEmbed(prediction);
+
+    let targetMsg = null;
+    if (livePredictionMessageId && !forceNew) {
+      targetMsg = await channel.messages.fetch(livePredictionMessageId).catch(() => null);
+    }
+
+    // Fallback: check recent messages in channel to avoid orphan duplicates
+    if (!targetMsg && !forceNew) {
+      const recent = await channel.messages.fetch({ limit: 10 }).catch(() => null);
+      if (recent) {
+        targetMsg = recent.find(
+          (m) => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title?.includes('Predictor')
+        );
+      }
+    }
+
+    if (targetMsg) {
+      await targetMsg.edit({ embeds: [embed] });
+      livePredictionMessageId = targetMsg.id;
+      console.log(`[prediction] 🔄 Updated live prediction display in channel <#${predictionChannelId}>`);
+    } else {
+      const sent = await channel.send({ embeds: [embed] });
+      livePredictionMessageId = sent.id;
+      console.log(`[prediction] 🚀 Posted new live prediction display in channel <#${predictionChannelId}>`);
+    }
+
+    savePredictionState({ messageId: livePredictionMessageId });
+  } catch (err) {
+    console.error('[prediction] Failed to update prediction channel:', err.message);
+  }
+}
+
 /** Setter injected into the /setchannel command. */
 function setNotifyChannel(id) {
   notifyChannelId = id;
@@ -245,6 +319,10 @@ app.post('/api/notify-ready', async (req, res) => {
     const header = `🚀 **SCANNER EXECUTED:** Account **${account || 'Roblox Client'}** is now online and scanning!`;
 
     await channel.send({ content: header, embeds: [embed] });
+
+    // Live update predictions in dedicated channel (1550126931100303480)
+    updatePredictionChannel().catch((err) => console.error('[prediction] Ready update error:', err.message));
+
     return res.status(200).json({ ok: true, message: 'Ready alert sent.' });
   } catch (err) {
     console.error('[webhook/ready] Error:', err.message);
@@ -272,6 +350,10 @@ app.post('/api/notify-banner', async (req, res) => {
     const header = `${rolePing} 📜 **ACTIVE RIFT BANNER:** **${bannerName}** is now active at the Rift Machine!`;
 
     await channel.send({ content: header, embeds: [embed] });
+
+    // Live update predictions in dedicated channel if banner changes
+    updatePredictionChannel().catch((err) => console.error('[prediction] Banner update error:', err.message));
+
     return res.status(200).json({ ok: true, message: 'Banner alert sent.' });
   } catch (err) {
     console.error('[webhook/banner] Error:', err.message);
@@ -342,6 +424,9 @@ app.post('/api/notify-egg', async (req, res) => {
     bannerName: bannerName || currentActiveBanner,
   });
 
+  // Live update prediction channel whenever an egg spawns
+  updatePredictionChannel().catch((err) => console.error('[prediction] Spawn update error:', err.message));
+
   try {
     const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
     if (!channel) {
@@ -401,6 +486,9 @@ client.once('ready', () => {
   app.listen(PORT, () => {
     console.log(`   Webhook server       : http://localhost:${PORT}`);
     console.log('──────────────────────────────────────────────');
+
+    // Initial live prediction display in dedicated channel
+    updatePredictionChannel().catch((err) => console.error('[prediction] Startup update error:', err.message));
   });
 });
 
