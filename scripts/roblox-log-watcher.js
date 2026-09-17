@@ -54,6 +54,12 @@ function getLatestLogFile() {
   }
 }
 
+const KNOWN_RARITIES = new Set([
+  'Common', 'Uncommon', 'Rare', 'Epic',
+  'Legendary', 'Mythic', 'Cosmic',
+  'Secret', 'Eternal', 'Divine', 'Ultra',
+]);
+
 async function forwardEggAlert(rarity, eggName, biome) {
   const cleanEgg = eggName.trim();
   const cleanBiome = biome.trim();
@@ -95,6 +101,42 @@ async function forwardBossAlert(bossName, biome) {
   }
 }
 
+async function forwardBannerAlert(bannerName) {
+  const cleanBanner = bannerName.trim();
+  const dedupeKey = `banner_${cleanBanner}`;
+
+  if (isDuplicate(dedupeKey)) return;
+
+  console.log(`[Watcher] 📜 Detected Banner: ${cleanBanner}! Forwarding...`);
+  try {
+    const start = Date.now();
+    await axios.post(`${BOT_URL}/api/notify-banner`, {
+      bannerName: cleanBanner,
+    });
+    console.log(`[Watcher] ✅ Banner alert forwarded to Discord in ${Date.now() - start}ms!`);
+  } catch (err) {
+    console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
+  }
+}
+
+async function forwardReadyAlert(account) {
+  const cleanAccount = (account || 'Roblox Client').trim();
+  const dedupeKey = `ready_${cleanAccount}`;
+
+  if (isDuplicate(dedupeKey)) return;
+
+  console.log(`[Watcher] 🚀 Scanner ready for account: ${cleanAccount}! Forwarding...`);
+  try {
+    const start = Date.now();
+    await axios.post(`${BOT_URL}/api/notify-ready`, {
+      account: cleanAccount,
+    });
+    console.log(`[Watcher] ✅ Ready alert forwarded to Discord in ${Date.now() - start}ms!`);
+  } catch (err) {
+    console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
+  }
+}
+
 function processLine(line) {
   if (!line || line.length < 10) return;
 
@@ -112,10 +154,32 @@ function processLine(line) {
     return;
   }
 
-  // Pattern 3: Fallback raw announcement matching
-  const rawEggMatch = line.match(/A[n]?\s+([a-zA-Z\s]+)\s+(.+?)\s+Egg\s+spawned\s+in\s+([^\r\n!.]+)/i);
+  // Pattern 3: From our Dev Console script [EGG_ALERT] BANNER:bannerName
+  const bannerMatch = line.match(/\[EGG_ALERT\]\s+BANNER:([^\r\n]+)/i);
+  if (bannerMatch) {
+    forwardBannerAlert(bannerMatch[1]);
+    return;
+  }
+
+  // Pattern 4: From our Dev Console script [EGG_ALERT] READY:account
+  const readyMatch = line.match(/\[EGG_ALERT\]\s+READY:([^\r\n]+)/i);
+  if (readyMatch) {
+    forwardReadyAlert(readyMatch[1]);
+    return;
+  }
+
+  // Pattern 5: Fallback raw announcement matching
+  const rawEggMatch = line.match(/A[n]?\s+([a-zA-Z]+)\s+(.+?)\s+Egg\s+spawned\s+in\s+([^\r\n!.]+)/i);
   if (rawEggMatch && !line.includes('[Watcher]')) {
-    forwardEggAlert(rawEggMatch[1], rawEggMatch[2], rawEggMatch[3]);
+    let rarity = rawEggMatch[1].trim();
+    let eggName = rawEggMatch[2].trim();
+    const biome = rawEggMatch[3].trim();
+    const capitalizedRarity = rarity.charAt(0).toUpperCase() + rarity.slice(1).toLowerCase();
+    if (!KNOWN_RARITIES.has(capitalizedRarity)) {
+      eggName = `${rarity} ${eggName}`;
+      rarity = eggName.toLowerCase().includes('rift') ? 'Rift' : 'Special';
+    }
+    forwardEggAlert(rarity, eggName, biome);
     return;
   }
 
