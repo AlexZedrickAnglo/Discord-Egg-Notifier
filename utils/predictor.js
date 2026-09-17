@@ -320,7 +320,7 @@ function getPrediction(activeBanner = null) {
       eternalDryStreak,
     },
     topBiomes: rankedBiomes.slice(0, 4),
-    topPets: rankedPets.slice(0, 20),
+    topPets: rankedPets.slice(0, 10),
   };
 }
 

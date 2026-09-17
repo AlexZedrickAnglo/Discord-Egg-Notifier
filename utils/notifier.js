@@ -267,16 +267,10 @@ function buildPredictionEmbed(data) {
     ? `<t:${nextSpawnUnix}:R> (\`~${Math.ceil(nextSpawnEtaSeconds / 60)}m\`)`
     : `Imminent (<t:${nextSpawnUnix}:R>)`;
 
-  const formatPetLine = (p, idx) => {
+  const petLines = topPets.slice(0, 10).map((p, idx) => {
     const icon = RARITY_EMOJI[p.rarity.toLowerCase()] || '🥚';
     return `**${idx + 1}.** ${icon} **${p.name}** (\`${p.rarity}\` • ${p.biome}) — \`${p.bar}\` **${p.probability}%**`;
-  };
-
-  const petsPart1 = topPets.slice(0, 10);
-  const petsPart2 = topPets.slice(10, 20);
-
-  const petLines1 = petsPart1.map((p, idx) => formatPetLine(p, idx)).join('\n');
-  const petLines2 = petsPart2.map((p, idx) => formatPetLine(p, idx + 10)).join('\n');
+  }).join('\n');
 
   const rarityLine = `👑 **Divine:** \`${rarityOdds.Divine}%\` | 💎 **Eternal:** \`${rarityOdds.Eternal}%\` | 🔮 **Secret:** \`${rarityOdds.Secret}%\``;
   const biomeLine = topBiomes.map((b) => `• **${b.biome}:** \`${b.probability}%\` *(dry: ${b.dryStreak} spawns)*`).join('\n');
@@ -297,14 +291,9 @@ function buildPredictionEmbed(data) {
       { name: '⏱️ Average Spawn Pace', value: `\`~${Math.round(averageIntervalSeconds / 60)}m\` (\`${averageIntervalSeconds}s\`)`, inline: true },
       { name: '📜 Last Global Spawn', value: lastSpawnDesc, inline: false },
       { name: '📊 Rarity Likelihood (Pity Adjusted)', value: `${rarityLine}\n*Dry-Streaks:* Divine: \`${pity.divineDryStreak}\` spawns | Eternal: \`${pity.eternalDryStreak}\` spawns`, inline: false },
-      { name: '🎯 Top Predicted Pets (1 – 10)', value: petLines1 || 'No pets available', inline: false },
-    );
-
-  if (petLines2 && petLines2.length > 0) {
-    embed.addFields({ name: '🎯 Predicted Pet Candidates (11 – 20)', value: petLines2, inline: false });
-  }
-
-  embed.addFields({ name: '🗺️ Likely Biome Rotations', value: biomeLine || 'Unknown', inline: false })
+      { name: '🎯 Top 10 Highest Probability Pets', value: petLines || 'No pets available', inline: false },
+      { name: '🗺️ Likely Biome Rotations', value: biomeLine || 'Unknown', inline: false },
+    )
     .setFooter({ text: 'Steal An Egg Notifier • Global AI Predictor' })
     .setTimestamp();
 
