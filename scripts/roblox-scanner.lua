@@ -611,13 +611,6 @@ local function handleMessage(text)
     -- ── Pattern 2: Rift Boss / Abyss Overlord Spawn ───────────
     local lower = text:lower()
     if (lower:find("rift") or lower:find("abyss")) and lower:find("spawn") then
-        local now = os.time()
-        -- Cooldown: prevent duplicate boss alerts and in-game popups within 120 seconds
-        if (now - lastBossEventTime < 120) then
-            return
-        end
-        lastBossEventTime = now
-
         local bossName = lower:find("abyss") and "Abyss Overlord" or "Rift Boss"
         local bossBiome = "Unknown"
         local knownBiomes = {"Abyss Ocean", "Cherry Blossom", "Titan Temple", "Angels & Demons", "Prehistoric", "Cosmic", "Volcano", "Jungle", "Snow", "Forest", "Lake", "Desert"}
@@ -636,13 +629,25 @@ local function handleMessage(text)
             bossBiome = cleanBiomeName(bossBiome)
         end
 
+        -- Filter: Never notify if biome is Unknown (drops secondary entity spawn announcements)
+        if bossBiome == "Unknown" or #bossBiome < 3 then
+            return
+        end
+
+        local now = os.time()
+        -- Cooldown: prevent duplicate boss alerts within 600 seconds (10 minutes)
+        if (now - lastBossEventTime < 600) then
+            return
+        end
+        lastBossEventTime = now
+
         -- Print structured log tag for roblox-log-watcher.js (F9 Console Bridge)
         print(string.format("[EGG_ALERT] BOSS:%s:%s", bossName, bossBiome))
 
         sendAlert("/api/notify-boss", {
             bossName = bossName,
             biome    = bossBiome
-        }, 120)
+        }, 600)
 
         notifyUser("Boss Spawned!", bossName .. " in " .. bossBiome, 6)
     end

@@ -84,8 +84,14 @@ async function forwardEggAlert(rarity, eggName, biome) {
 let lastBossForwardTime = 0;
 
 async function forwardBossAlert(bossName, biome) {
+  const cleanBiome = (biome || 'Unknown').trim();
+  if (!cleanBiome || cleanBiome.toLowerCase() === 'unknown') {
+    console.log(`[Watcher] ⏳ Ignored boss alert with Unknown biome`);
+    return;
+  }
+
   const now = Date.now();
-  if (now - lastBossForwardTime < 120000) {
+  if (now - lastBossForwardTime < 600000) {
     console.log(`[Watcher] ⏳ Boss alert suppressed (cooldown active: ${Math.round((now - lastBossForwardTime) / 1000)}s ago)`);
     return;
   }
@@ -194,8 +200,10 @@ function processLine(line) {
 
   const rawLower = line.toLowerCase();
   if ((rawLower.includes('rift boss') || rawLower.includes('abyss overlord') || (rawLower.includes('boss') && rawLower.includes('rift'))) && rawLower.includes('spawn') && !line.includes('[Watcher]')) {
-    const biomeMatch = line.match(/in\s+([a-zA-Z\s]+)/i);
-    forwardBossAlert('Rift Boss', biomeMatch ? biomeMatch[1] : 'Unknown');
+    const biomeMatch = line.match(/in\s+([a-zA-Z\s&]+)/i);
+    if (biomeMatch && biomeMatch[1]) {
+      forwardBossAlert('Rift Boss', biomeMatch[1].trim());
+    }
   }
 }
 

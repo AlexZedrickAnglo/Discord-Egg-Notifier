@@ -41,7 +41,7 @@ const EGG_ROLE_ID     = process.env.EGG_ROLE_ID;
 let currentActiveBanner = null;
 let lastBossAlertTime   = 0;
 let lastBossAlertInfo   = null;
-const BOSS_DEDUPE_MS    = 120_000; // 2 minutes lockout
+const BOSS_DEDUPE_MS    = 600_000; // 10 minutes lockout (Rift Boss event duration)
 const recentEggAlerts   = new Map();
 const EGG_DEDUPE_MS     = 15_000;  // 15 seconds lockout
 
@@ -264,7 +264,13 @@ app.use(express.json());
  */
 async function sendRiftBossAlert({ bossName, biome, health, timeLimit, image }) {
   const boss        = bossName || 'Rift Boss';
-  const targetBiome = biome || 'Unknown';
+  const targetBiome = (biome || 'Unknown').trim();
+
+  // Filter: Never alert if biome is Unknown (drops secondary phase/entity announcements)
+  if (!targetBiome || targetBiome.toLowerCase() === 'unknown') {
+    console.log(`[webhook/boss] ⏳ Dropped boss alert with Unknown biome: "${boss}"`);
+    return false;
+  }
 
   const now = Date.now();
   if (now - lastBossAlertTime < BOSS_DEDUPE_MS) {
