@@ -18,6 +18,10 @@ const {
   Client,
   Collection,
   GatewayIntentBits,
+  Partials,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
 
 const { getGameDetails, findEgg } = require('./utils/roblox');
@@ -28,6 +32,8 @@ const {
   buildRiftBossEmbed,
   buildBannerEmbed,
   buildScannerReadyEmbed,
+  buildPredictionEmbed,
+  buildRolePickerEmbed,
 } = require('./utils/notifier');
 const predictor = require('./utils/predictor');
 
@@ -125,6 +131,131 @@ function setNotifyChannel(id) {
   console.log(`[config] Notification channel set → ${id}`);
 }
 
+// ── Role Picker & Auto-Role Configuration ─────────────────────
+const ROLE_CHANNEL_ID = process.env.ROLE_CHANNEL_ID || '1550142026941599744';
+const SECRET_ROLE_ID  = process.env.SECRET_ROLE_ID  || '1550146335045324960';
+const ETERNAL_ROLE_ID = process.env.ETERNAL_ROLE_ID || '1550146424027615272';
+const DIVINE_ROLE_ID  = process.env.DIVINE_ROLE_ID  || '1550146470752030760';
+const AUTOROLE_ID     = process.env.AUTOROLE_ID     || '1550146592676380794';
+
+const BUTTON_ROLE_MAP = {
+  role_secret:  SECRET_ROLE_ID,
+  role_eternal: ETERNAL_ROLE_ID,
+  role_divine:  DIVINE_ROLE_ID,
+};
+
+const EMOJI_ROLE_MAP = {
+  '🔮': SECRET_ROLE_ID,
+  '💎': ETERNAL_ROLE_ID,
+  '👑': DIVINE_ROLE_ID,
+};
+
+let liveRolePickerMessageId = null;
+const ROLE_PICKER_STATE_FILE = path.join(__dirname, 'data', 'role-picker-state.json');
+
+function loadRolePickerState() {
+  try {
+    if (fs.existsSync(ROLE_PICKER_STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ROLE_PICKER_STATE_FILE, 'utf8'));
+      if (data && data.messageId) {
+        liveRolePickerMessageId = data.messageId;
+      }
+    }
+  } catch (err) {
+    console.error('[roles] Error loading state:', err.message);
+  }
+}
+
+function saveRolePickerState(state) {
+  try {
+    fs.writeFileSync(ROLE_PICKER_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[roles] Error saving state:', err.message);
+  }
+}
+
+loadRolePickerState();
+
+/**
+ * Initialize or refresh the "Pick a Role" selection message in channel 1550142026941599744.
+ * Includes both interactive buttons and emoji reactions (🔮, 💎, 👑).
+ */
+async function initRolePickerChannel() {
+  if (!ROLE_CHANNEL_ID) return;
+
+  try {
+    const channel = await client.channels.fetch(ROLE_CHANNEL_ID).catch(() => null);
+    if (!channel) {
+      console.warn(`[roles] Channel ${ROLE_CHANNEL_ID} not found or inaccessible.`);
+      return;
+    }
+
+    const embed = buildRolePickerEmbed({
+      secretRoleId:  SECRET_ROLE_ID,
+      eternalRoleId: ETERNAL_ROLE_ID,
+      divineRoleId:  DIVINE_ROLE_ID,
+    });
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('role_secret')
+        .setLabel('Secret')
+        .setEmoji('🔮')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('role_eternal')
+        .setLabel('Eternal')
+        .setEmoji('💎')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('role_divine')
+        .setLabel('Divine')
+        .setEmoji('👑')
+        .setStyle(ButtonStyle.Secondary),
+    );
+
+    let targetMsg = null;
+    if (liveRolePickerMessageId) {
+      targetMsg = await channel.messages.fetch(liveRolePickerMessageId).catch(() => null);
+    }
+
+    if (!targetMsg) {
+      const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+      const botMessages = recent ? Array.from(recent.values()).filter((m) => m.author.id === client.user.id) : [];
+      if (botMessages.length > 0) {
+        targetMsg = botMessages[0];
+      }
+    }
+
+    if (targetMsg) {
+      await targetMsg.edit({ embeds: [embed], components: [row] });
+      liveRolePickerMessageId = targetMsg.id;
+      console.log(`[roles] 🔄 Updated role picker message in <#${ROLE_CHANNEL_ID}> (${targetMsg.id})`);
+    } else {
+      const sent = await channel.send({ embeds: [embed], components: [row] });
+      targetMsg = sent;
+      liveRolePickerMessageId = sent.id;
+      console.log(`[roles] 🚀 Posted new role picker message in <#${ROLE_CHANNEL_ID}> (${sent.id})`);
+    }
+
+    saveRolePickerState({ messageId: liveRolePickerMessageId });
+
+    // Ensure default reactions are present
+    try {
+      await targetMsg.react('🔮');
+      await targetMsg.react('💎');
+      await targetMsg.react('👑');
+    } catch (reactErr) {
+      console.warn(`[roles] ⚠️ Could not pre-add reactions (check channel permissions): ${reactErr.message}`);
+    }
+  } catch (err) {
+    console.error('[roles] ⚠️ Error initializing role picker channel:', err.message);
+    if (err.code === 50013 || err.message?.includes('Missing Permissions')) {
+      console.warn(`[roles] 💡 Bot needs "Send Messages", "Embed Links", and "Add Reactions" permissions in channel #${ROLE_CHANNEL_ID}`);
+    }
+  }
+}
+
 // ═════════════════════════════════════════════════════════════
 //  2.  DISCORD CLIENT
 // ═════════════════════════════════════════════════════════════
@@ -132,6 +263,13 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildMembers,
+  ],
+  partials: [
+    Partials.Message,
+    Partials.Channel,
+    Partials.Reaction,
   ],
 });
 
@@ -144,8 +282,43 @@ for (const file of fs.readdirSync(cmdDir).filter((f) => f.endsWith('.js'))) {
   client.commands.set(cmd.data.name, cmd);
 }
 
-// ── Handle interactions ──────────────────────────────────────
+// ── Handle interactions (Slash commands & Role buttons) ──────
 client.on('interactionCreate', async (interaction) => {
+  // ── Handle Role Picker Button Clicks ────────────────────────
+  if (interaction.isButton()) {
+    const roleId = BUTTON_ROLE_MAP[interaction.customId];
+    if (!roleId) return;
+
+    const member = interaction.member;
+    if (!member) {
+      return interaction.reply({ content: '❌ Could not resolve member details.', ephemeral: true });
+    }
+
+    try {
+      if (member.roles.cache.has(roleId)) {
+        await member.roles.remove(roleId);
+        console.log(`[roles] 🗑️ Removed role ${roleId} from ${interaction.user.tag} via button`);
+        return interaction.reply({
+          content: `🗑️ Removed the <@&${roleId}> role!`,
+          ephemeral: true,
+        });
+      } else {
+        await member.roles.add(roleId);
+        console.log(`[roles] ✅ Added role ${roleId} to ${interaction.user.tag} via button`);
+        return interaction.reply({
+          content: `✅ Added the <@&${roleId}> role!`,
+          ephemeral: true,
+        });
+      }
+    } catch (err) {
+      console.error(`[roles] ❌ Error modifying role ${roleId} for ${interaction.user.tag}:`, err.message);
+      return interaction.reply({
+        content: `❌ Could not modify role: **${err.message}**\n*(Server admin: verify bot has "Manage Roles" permission and its role is positioned above this role).*`,
+        ephemeral: true,
+      });
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);
@@ -160,6 +333,98 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply(reply);
     } else {
       await interaction.reply(reply);
+    }
+  }
+});
+
+// ── Reaction Roles: Add ───────────────────────────────────────
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (user.bot) return;
+
+  if (reaction.partial) {
+    try {
+      await reaction.fetch();
+    } catch (err) {
+      console.error('[roles] Failed to fetch partial reaction:', err.message);
+      return;
+    }
+  }
+
+  if (reaction.message.channelId !== ROLE_CHANNEL_ID) return;
+
+  const emojiName = reaction.emoji.name;
+  const roleId = EMOJI_ROLE_MAP[emojiName];
+  if (!roleId) return;
+
+  try {
+    const guild = reaction.message.guild;
+    if (!guild) return;
+
+    const member = guild.members.cache.get(user.id) || await guild.members.fetch(user.id).catch(() => null);
+    if (!member) return;
+
+    if (!member.roles.cache.has(roleId)) {
+      await member.roles.add(roleId);
+      console.log(`[roles] ✅ Added role <@&${roleId}> to ${user.tag} (reacted ${emojiName})`);
+    }
+  } catch (err) {
+    console.error(`[roles] ❌ Error adding role ${roleId} to ${user.tag}:`, err.message);
+  }
+});
+
+// ── Reaction Roles: Remove ────────────────────────────────────
+client.on('messageReactionRemove', async (reaction, user) => {
+  if (user.bot) return;
+
+  if (reaction.partial) {
+    try {
+      await reaction.fetch();
+    } catch (err) {
+      console.error('[roles] Failed to fetch partial reaction:', err.message);
+      return;
+    }
+  }
+
+  if (reaction.message.channelId !== ROLE_CHANNEL_ID) return;
+
+  const emojiName = reaction.emoji.name;
+  const roleId = EMOJI_ROLE_MAP[emojiName];
+  if (!roleId) return;
+
+  try {
+    const guild = reaction.message.guild;
+    if (!guild) return;
+
+    const member = guild.members.cache.get(user.id) || await guild.members.fetch(user.id).catch(() => null);
+    if (!member) return;
+
+    if (member.roles.cache.has(roleId)) {
+      await member.roles.remove(roleId);
+      console.log(`[roles] 🗑️ Removed role <@&${roleId}> from ${user.tag} (unreacted ${emojiName})`);
+    }
+  } catch (err) {
+    console.error(`[roles] ❌ Error removing role ${roleId} from ${user.tag}:`, err.message);
+  }
+});
+
+// ── Auto-role for New Members ─────────────────────────────────
+client.on('guildMemberAdd', async (member) => {
+  if (!AUTOROLE_ID) return;
+
+  try {
+    console.log(`[autorole] 👤 New member joined: ${member.user.tag} (${member.id})`);
+    const role = member.guild.roles.cache.get(AUTOROLE_ID) || await member.guild.roles.fetch(AUTOROLE_ID).catch(() => null);
+    if (!role) {
+      console.warn(`[autorole] ⚠️ Auto-role ${AUTOROLE_ID} not found in guild.`);
+      return;
+    }
+
+    await member.roles.add(role);
+    console.log(`[autorole] ✅ Assigned "${role.name}" (${role.id}) to new member ${member.user.tag}`);
+  } catch (err) {
+    console.error(`[autorole] ❌ Failed to auto-assign role to ${member.user.tag}:`, err.message);
+    if (err.code === 50013 || err.message?.includes('Missing Permissions')) {
+      console.warn('[autorole] 👉 Ensure the bot has "Manage Roles" permission and its role is above the auto-role!');
     }
   }
 });
@@ -481,7 +746,10 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: Date.now() - 
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`   Notification channel : ${notifyChannelId}`);
+  console.log(`   Prediction channel   : ${predictionChannelId}`);
+  console.log(`   Role picker channel  : ${ROLE_CHANNEL_ID}`);
   console.log(`   Alert role           : ${EGG_ROLE_ID ?? '(none)'}`);
+  console.log(`   Auto-role (members)  : ${AUTOROLE_ID}`);
   console.log(`   Egg database         : ${require('./utils/roblox').eggLookup.size} eggs loaded`);
 
   // Start the Roblox update poller (every 60 seconds).
@@ -495,6 +763,9 @@ client.once('ready', () => {
 
     // Initial live prediction display in dedicated channel
     updatePredictionChannel().catch((err) => console.error('[prediction] Startup update error:', err.message));
+
+    // Initial role picker setup / verification in role channel
+    initRolePickerChannel().catch((err) => console.error('[roles] Startup update error:', err.message));
   });
 });
 

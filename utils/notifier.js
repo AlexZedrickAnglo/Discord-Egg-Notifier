@@ -300,6 +300,25 @@ function buildPredictionEmbed(data) {
   return embed;
 }
 
+/**
+ * Build the "Pick a Role" selection embed for the role channel.
+ */
+function buildRolePickerEmbed({ secretRoleId, eternalRoleId, divineRoleId }) {
+  return new EmbedBuilder()
+    .setTitle('🎭  Notification Roles — Pick Your Roles')
+    .setColor(0x5865F2)
+    .setDescription(
+      'Welcome to **Steal An Egg Notifier**!\n\n' +
+      'Select which egg tiers you want to receive alerts and pings for. You can pick any combination of roles:\n\n' +
+      `🔮 • <@&${secretRoleId}> — Alerts for **Secret** egg spawns\n` +
+      `💎 • <@&${eternalRoleId}> — Alerts for **Eternal** egg spawns\n` +
+      `👑 • <@&${divineRoleId}> — Alerts for **Divine** egg spawns\n\n` +
+      '*React with the emojis below or click the buttons to toggle roles on/off!*'
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Role Selection' })
+    .setTimestamp();
+}
+
 module.exports = {
   RARITY_COLORS,
   RARITY_EMOJI,
@@ -313,4 +332,5 @@ module.exports = {
   buildBannerEmbed,
   buildScannerReadyEmbed,
   buildPredictionEmbed,
+  buildRolePickerEmbed,
 };
