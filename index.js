@@ -806,8 +806,20 @@ app.post('/api/notify-egg', async (req, res) => {
       requiredForPet,
     });
 
-    // Always ping the alert role for Secret / Eternal / Divine / Banner eggs
-    const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
+    // Mention the specific egg rarity role instead of generic role
+    let targetRoleId = null;
+    const lowerRarity = (finalRarity || '').toLowerCase();
+    if (lowerRarity === 'divine') {
+      targetRoleId = DIVINE_ROLE_ID;
+    } else if (lowerRarity === 'eternal') {
+      targetRoleId = ETERNAL_ROLE_ID;
+    } else if (lowerRarity === 'secret') {
+      targetRoleId = SECRET_ROLE_ID;
+    } else {
+      targetRoleId = EGG_ROLE_ID;
+    }
+
+    const rolePing = targetRoleId ? `<@&${targetRoleId}>` : (EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '');
     const bannerBadge = bannerName
       ? (requiredForPet ? `⭐ **[SACRIFICE EGG: ${bannerName}]** ` : `⭐ **[BANNER EGG: ${bannerName}]** `)
       : '';

@@ -300,7 +300,10 @@ function buildPredictionEmbed(data) {
 
   const petLines = topPets.slice(0, 10).map((p, idx) => {
     const icon = RARITY_EMOJI[p.rarity.toLowerCase()] || '🥚';
-    return `**${idx + 1}.** ${icon} **${p.name}** (\`${p.rarity}\` • ${p.biome}) — \`${p.bar}\` **${p.probability}%**`;
+    const etaText = p.etaFormatted
+      ? `• ⏱️ in **${p.etaFormatted}** (<t:${p.etaUnix}:R>)`
+      : '';
+    return `**${idx + 1}.** ${icon} **${p.name}** (${p.biome}) — **${p.probability}%** ${etaText}`;
   }).join('\n');
 
   const rarityLine = `👑 **Divine:** \`${rarityOdds.Divine}%\` | 💎 **Eternal:** \`${rarityOdds.Eternal}%\` | 🔮 **Secret:** \`${rarityOdds.Secret}%\``;

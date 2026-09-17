@@ -241,9 +241,22 @@ function getPrediction(activeBanner = null) {
   }
 
   // 5. Specific Pet Likelihood Calculation
-  // Pool all pets from database
-  const allPets = [];
-  const rarityMap = { Secret: pSecret, Eternal: pEternal, Divine: pDivine };
+  // Track individual pet dry streaks from spawn history (how many spawns ago did this pet appear)
+  const petDryStreaks = {};
+  for (const [rarity, pets] of Object.entries(eggDb)) {
+    for (const pet of pets) {
+      let streak = 0;
+      for (let i = history.length - 1; i >= 0; i--) {
+        const hName = (history[i].eggName || '').toLowerCase().trim();
+        const pName = pet.name.toLowerCase().trim();
+        if (hName === pName || hName.includes(pName) || pName.includes(hName)) {
+          break;
+        }
+        streak++;
+      }
+      petDryStreaks[pet.name] = streak;
+    }
+  }
 
   // Count pets per (Biome, Rarity) bucket to split odds fairly
   const bucketCounts = {};
@@ -257,6 +270,8 @@ function getPrediction(activeBanner = null) {
   let totalRawPetScore = 0;
   const rawPetScores = [];
 
+  const rarityMap = { Secret: pSecret, Eternal: pEternal, Divine: pDivine };
+
   for (const [rarity, pets] of Object.entries(eggDb)) {
     const rProb = rarityMap[rarity] || 0.1;
     for (const pet of pets) {
@@ -266,15 +281,30 @@ function getPrediction(activeBanner = null) {
       // Base pet probability score
       let score = (bProb * rProb) / countInBucket;
 
+      // Pet-specific recency cooldown & dry streak adjustments:
+      // The pet that previously spawned has streak 0 and receives an immediate cooldown penalty,
+      // while pets that have not spawned in multiple resets gain progressive boosts.
+      const pStreak = petDryStreaks[pet.name] ?? 0;
+      if (pStreak === 0) {
+        score *= 0.12; // Just spawned! Severe cooldown penalty so it drops out of top slots
+      } else if (pStreak === 1) {
+        score *= 0.45; // Spawned 1 reset ago
+      } else if (pStreak === 2) {
+        score *= 0.75; // Spawned 2 resets ago
+      } else {
+        score *= (1.0 + Math.min(pStreak - 2, 10) * 0.18); // Dry streak boost for dormant pets
+      }
+
       // If active banner requires this pet for sacrifice
       if (activeBanner && bannerBiomes.includes(pet.biome)) {
-        score *= 1.15;
+        score *= 1.25;
       }
 
       rawPetScores.push({
         name: pet.name,
         rarity,
         biome: pet.biome,
+        dryStreak: pStreak,
         rawScore: score,
       });
       totalRawPetScore += score;
@@ -282,18 +312,39 @@ function getPrediction(activeBanner = null) {
   }
 
   // Normalize pet scores to exact percentages summing to 100%
-  const rankedPets = rawPetScores
+  const sortedPets = rawPetScores
     .map((p) => {
       const pct = (p.rawScore / totalRawPetScore) * 100;
       return {
         name: p.name,
         rarity: p.rarity,
         biome: p.biome,
+        dryStreak: p.dryStreak,
         probability: Math.round(pct * 10) / 10,
         bar: renderProgressBar(pct, 6),
       };
     })
     .sort((a, b) => b.probability - a.probability);
+
+  // Compute predicted ETA in xx:xx minutes based on rank and spawn pace
+  const avgSec = Math.round(avgIntervalMs / 1000);
+  const now = Date.now();
+
+  const rankedPets = sortedPets.map((p, idx) => {
+    // Expected spawn offset: Rank 1 is imminent/next reset, followed by progressive cycle steps
+    const etaSecs = Math.max(10, Math.round(secondsRemaining + (idx * avgSec * 0.85)));
+    const mins = Math.floor(etaSecs / 60);
+    const secs = etaSecs % 60;
+    const etaFormatted = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    const etaUnix = Math.floor((now + etaSecs * 1000) / 1000);
+
+    return {
+      ...p,
+      etaSeconds: etaSecs,
+      etaFormatted,
+      etaUnix,
+    };
+  });
 
   // Top biomes ranking
   const rankedBiomes = Object.entries(biomeProbabilities)
