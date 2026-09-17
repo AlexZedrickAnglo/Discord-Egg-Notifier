@@ -289,32 +289,40 @@ client.on('interactionCreate', async (interaction) => {
     const roleId = BUTTON_ROLE_MAP[interaction.customId];
     if (!roleId) return;
 
-    const member = interaction.member;
-    if (!member) {
-      return interaction.reply({ content: '❌ Could not resolve member details.', ephemeral: true });
-    }
+    // Immediately acknowledge to Discord to prevent "didn't respond in time"
+    await interaction.deferReply({ ephemeral: true }).catch(() => {});
 
     try {
-      if (member.roles.cache.has(roleId)) {
+      let member = interaction.member;
+      if (!member || !member.roles || !member.roles.cache) {
+        member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+      }
+
+      if (!member) {
+        return interaction.editReply({ content: '❌ Could not resolve member details.' });
+      }
+
+      const hasRole = member.roles.cache
+        ? member.roles.cache.has(roleId)
+        : (Array.isArray(member.roles) ? member.roles.includes(roleId) : false);
+
+      if (hasRole) {
         await member.roles.remove(roleId);
         console.log(`[roles] 🗑️ Removed role ${roleId} from ${interaction.user.tag} via button`);
-        return interaction.reply({
+        return interaction.editReply({
           content: `🗑️ Removed the <@&${roleId}> role!`,
-          ephemeral: true,
         });
       } else {
         await member.roles.add(roleId);
         console.log(`[roles] ✅ Added role ${roleId} to ${interaction.user.tag} via button`);
-        return interaction.reply({
+        return interaction.editReply({
           content: `✅ Added the <@&${roleId}> role!`,
-          ephemeral: true,
         });
       }
     } catch (err) {
       console.error(`[roles] ❌ Error modifying role ${roleId} for ${interaction.user.tag}:`, err.message);
-      return interaction.reply({
+      return interaction.editReply({
         content: `❌ Could not modify role: **${err.message}**\n*(Server admin: verify bot has "Manage Roles" permission and its role is positioned above this role).*`,
-        ephemeral: true,
       });
     }
   }
