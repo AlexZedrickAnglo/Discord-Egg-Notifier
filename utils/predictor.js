@@ -131,11 +131,14 @@ function renderProgressBar(percentage, totalBlocks = 6) {
 }
 
 /**
- * Compute real-time mathematical predictions based on history & active banner
+ * Compute real-time mathematical predictions based on history & active banner.
+ * Uses empirical spawn frequency distribution, Bayesian rarity priors,
+ * and recency cooldowns to forecast which egg will spawn next.
  */
 function getPrediction(activeBanner = null) {
   const history = loadHistory();
   const eggDb = loadEggDb();
+  const totalSpawns = history.length;
 
   // 1. Compute Average Spawn Interval and Next Spawn ETA
   let avgIntervalMs = 360000; // Default 6 minutes
@@ -159,89 +162,64 @@ function getPrediction(activeBanner = null) {
   const nextSpawnUnix = Math.floor(nextSpawnTimestamp / 1000);
   const secondsRemaining = Math.max(0, Math.round((nextSpawnTimestamp - Date.now()) / 1000));
 
-  // 2. Dry-streak Analysis
+  // 2. Count occurrences of each egg, rarity, and biome from history
+  const eggCounts = {};
+  const rarityCounts = { Secret: 0, Eternal: 0, Divine: 0 };
+  const biomeCounts = {};
+
+  history.forEach((h) => {
+    const eggKey = (h.eggName || '').toLowerCase().trim();
+    eggCounts[eggKey] = (eggCounts[eggKey] || 0) + 1;
+
+    const r = h.rarity || 'Secret';
+    if (rarityCounts[r] !== undefined) {
+      rarityCounts[r]++;
+    }
+
+    const b = normalizeBiome(h.biome);
+    biomeCounts[b] = (biomeCounts[b] || 0) + 1;
+  });
+
+  // 3. Bayesian Smoothed Rarity Distribution with Pity
+  const alphaSecret = 3.0;
+  const alphaEternal = 1.4;
+  const alphaDivine = 0.6;
+  const sumAlpha = alphaSecret + alphaEternal + alphaDivine;
+  const totalObserved = totalSpawns + sumAlpha;
+
+  let pSecret = (rarityCounts.Secret + alphaSecret) / totalObserved;
+  let pEternal = (rarityCounts.Eternal + alphaEternal) / totalObserved;
+  let pDivine = (rarityCounts.Divine + alphaDivine) / totalObserved;
+
+  // Track rarity dry streaks
   let divineDryStreak = 0;
   let eternalDryStreak = 0;
-
   for (let i = history.length - 1; i >= 0; i--) {
     const r = (history[i].rarity || '').toLowerCase();
     if (r === 'divine') break;
     divineDryStreak++;
   }
-
   for (let i = history.length - 1; i >= 0; i--) {
     const r = (history[i].rarity || '').toLowerCase();
     if (r === 'eternal') break;
     eternalDryStreak++;
   }
 
-  // Biome dry streaks
-  const biomeDryStreaks = {};
-  for (const b of KNOWN_BIOMES) {
-    biomeDryStreaks[b] = 0;
-    for (let i = history.length - 1; i >= 0; i--) {
-      if (history[i].biome.toLowerCase() === b.toLowerCase()) break;
-      biomeDryStreaks[b]++;
-    }
-  }
-
-  // 3. Rarity Probability Calculation (Base + Pity scaling)
-  let weightSecret = 60.0;
-  let weightEternal = 28.0;
-  let weightDivine = 12.0;
-
-  // Divine pity scaling
+  // Progressive pity scaling
   if (divineDryStreak >= 5) {
-    weightDivine += (divineDryStreak - 4) * 3.5;
-  } else if (divineDryStreak === 0) {
-    weightDivine *= 0.55; // Just spawned, lower immediate odds
+    pDivine *= (1 + (divineDryStreak - 4) * 0.18);
   }
-
-  // Eternal pity scaling
   if (eternalDryStreak >= 3) {
-    weightEternal += (eternalDryStreak - 2) * 2.5;
-  } else if (eternalDryStreak === 0) {
-    weightEternal *= 0.7;
+    pEternal *= (1 + (eternalDryStreak - 2) * 0.12);
   }
 
-  const totalRarityWeight = weightSecret + weightEternal + weightDivine;
-  const pSecret = (weightSecret / totalRarityWeight);
-  const pEternal = (weightEternal / totalRarityWeight);
-  const pDivine = (weightDivine / totalRarityWeight);
+  const sumR = pSecret + pEternal + pDivine;
+  pSecret /= sumR;
+  pEternal /= sumR;
+  pDivine /= sumR;
+  const rarityMap = { Secret: pSecret, Eternal: pEternal, Divine: pDivine };
 
-  // 4. Biome Probability Calculation (Recency dry-streaks + Active banner affinity)
-  const bannerBiomes = (activeBanner && BANNER_BIOME_MAP[activeBanner]) ? BANNER_BIOME_MAP[activeBanner] : [];
-  const biomeWeights = {};
-  let totalBiomeWeight = 0;
-
-  for (const b of KNOWN_BIOMES) {
-    const streak = biomeDryStreaks[b] ?? 0;
-    let w = 1.0;
-    if (streak === 0) {
-      w = 0.35; // Just spawned in this biome
-    } else if (streak === 1) {
-      w = 0.70;
-    } else if (streak === 2) {
-      w = 1.05;
-    } else {
-      w = 1.05 + Math.min(streak - 2, 8) * 0.28; // Dry streak boost
-    }
-
-    if (bannerBiomes.includes(b)) {
-      w *= 1.30; // Banner pool bonus
-    }
-
-    biomeWeights[b] = w;
-    totalBiomeWeight += w;
-  }
-
-  const biomeProbabilities = {};
-  for (const b of KNOWN_BIOMES) {
-    biomeProbabilities[b] = biomeWeights[b] / totalBiomeWeight;
-  }
-
-  // 5. Specific Pet Likelihood Calculation
-  // Track individual pet dry streaks from spawn history (how many spawns ago did this pet appear)
+  // 4. Track dry streaks for each individual egg/pet
   const petDryStreaks = {};
   for (const [rarity, pets] of Object.entries(eggDb)) {
     for (const pet of pets) {
@@ -258,68 +236,69 @@ function getPrediction(activeBanner = null) {
     }
   }
 
-  // Count pets per (Biome, Rarity) bucket to split odds fairly
-  const bucketCounts = {};
-  for (const [rarity, pets] of Object.entries(eggDb)) {
-    for (const pet of pets) {
-      const key = `${pet.biome}_${rarity}`;
-      bucketCounts[key] = (bucketCounts[key] || 0) + 1;
-    }
-  }
+  // 5. Active Banner affinity biomes
+  const bannerBiomes = (activeBanner && BANNER_BIOME_MAP[activeBanner]) ? BANNER_BIOME_MAP[activeBanner] : [];
 
-  let totalRawPetScore = 0;
-  const rawPetScores = [];
-
-  const rarityMap = { Secret: pSecret, Eternal: pEternal, Divine: pDivine };
+  // 6. Calculate Frequency-Based Score for Every Egg
+  let totalScore = 0;
+  const rawEggScores = [];
 
   for (const [rarity, pets] of Object.entries(eggDb)) {
     const rProb = rarityMap[rarity] || 0.1;
+
     for (const pet of pets) {
-      const bProb = biomeProbabilities[pet.biome] || (1 / KNOWN_BIOMES.length);
-      const countInBucket = bucketCounts[`${pet.biome}_${rarity}`] || 1;
+      const petKey = pet.name.toLowerCase().trim();
+      const count = eggCounts[petKey] || 0;
+      const streak = petDryStreaks[pet.name] ?? 999;
 
-      // Base pet probability score
-      let score = (bProb * rProb) / countInBucket;
+      // Frequency factor: Eggs with higher observed spawn counts carry higher empirical weight
+      const freqFactor = 1.0 + (count * 0.85);
 
-      // Pet-specific recency cooldown & dry streak adjustments:
-      // The pet that previously spawned has streak 0 and receives an immediate cooldown penalty,
-      // while pets that have not spawned in multiple resets gain progressive boosts.
-      const pStreak = petDryStreaks[pet.name] ?? 0;
-      if (pStreak === 0) {
-        score *= 0.12; // Just spawned! Severe cooldown penalty so it drops out of top slots
-      } else if (pStreak === 1) {
-        score *= 0.45; // Spawned 1 reset ago
-      } else if (pStreak === 2) {
-        score *= 0.75; // Spawned 2 resets ago
+      // Biome frequency factor: Biomes that spawn eggs frequently carry higher weight
+      const bCount = biomeCounts[pet.biome] || 0;
+      const biomeFactor = 1.0 + (bCount * 0.20);
+
+      let score = rProb * freqFactor * biomeFactor;
+
+      // Recency cooldown penalty & dry streak balancing:
+      // The egg that spawned in the previous reset receives an immediate cooldown penalty,
+      // dropping it out of the top slot so the top 10 dynamically rotates.
+      if (streak === 0) {
+        score *= 0.10; // Just spawned! Severe cooldown
+      } else if (streak === 1) {
+        score *= 0.50; // Spawned 1 reset ago
+      } else if (streak === 2) {
+        score *= 0.80; // Spawned 2 resets ago
       } else {
-        score *= (1.0 + Math.min(pStreak - 2, 10) * 0.18); // Dry streak boost for dormant pets
+        score *= (1.0 + Math.min(streak - 2, 6) * 0.04); // Gradual return to strength
       }
 
-      // If active banner requires this pet for sacrifice
+      // Active banner affinity boost
       if (activeBanner && bannerBiomes.includes(pet.biome)) {
         score *= 1.25;
       }
 
-      rawPetScores.push({
+      const eggName = pet.name.endsWith('Egg') ? pet.name : `${pet.name} Egg`;
+
+      rawEggScores.push({
         name: pet.name,
+        eggName,
         rarity,
         biome: pet.biome,
-        dryStreak: pStreak,
-        rawScore: score,
+        spawnCount: count,
+        dryStreak: streak,
+        score,
       });
-      totalRawPetScore += score;
+      totalScore += score;
     }
   }
 
-  // Normalize pet scores to exact percentages summing to 100%
-  const sortedPets = rawPetScores
-    .map((p) => {
-      const pct = (p.rawScore / totalRawPetScore) * 100;
+  // Normalize egg scores to exact percentages summing to 100%
+  const sortedEggs = rawEggScores
+    .map((e) => {
+      const pct = (e.score / totalScore) * 100;
       return {
-        name: p.name,
-        rarity: p.rarity,
-        biome: p.biome,
-        dryStreak: p.dryStreak,
+        ...e,
         probability: Math.round(pct * 10) / 10,
         bar: renderProgressBar(pct, 6),
       };
@@ -330,8 +309,7 @@ function getPrediction(activeBanner = null) {
   const avgSec = Math.round(avgIntervalMs / 1000);
   const now = Date.now();
 
-  const rankedPets = sortedPets.map((p, idx) => {
-    // Expected spawn offset: Rank 1 is imminent/next reset, followed by progressive cycle steps
+  const rankedEggs = sortedEggs.map((e, idx) => {
     const etaSecs = Math.max(10, Math.round(secondsRemaining + (idx * avgSec * 0.85)));
     const mins = Math.floor(etaSecs / 60);
     const secs = etaSecs % 60;
@@ -339,20 +317,24 @@ function getPrediction(activeBanner = null) {
     const etaUnix = Math.floor((now + etaSecs * 1000) / 1000);
 
     return {
-      ...p,
+      ...e,
       etaSeconds: etaSecs,
       etaFormatted,
       etaUnix,
     };
   });
 
-  // Top biomes ranking
-  const rankedBiomes = Object.entries(biomeProbabilities)
-    .map(([biome, prob]) => ({
-      biome,
-      probability: Math.round(prob * 1000) / 10,
-      dryStreak: biomeDryStreaks[biome] ?? 0,
-    }))
+  // Biome ranking based on empirical frequency & activity
+  const rankedBiomes = KNOWN_BIOMES
+    .map((b) => {
+      const count = biomeCounts[b] || 0;
+      const pct = totalSpawns > 0 ? (count / totalSpawns) * 100 : 100 / KNOWN_BIOMES.length;
+      return {
+        biome: b,
+        spawnCount: count,
+        probability: Math.round(pct * 10) / 10,
+      };
+    })
     .sort((a, b) => b.probability - a.probability);
 
   return {
@@ -371,7 +353,8 @@ function getPrediction(activeBanner = null) {
       eternalDryStreak,
     },
     topBiomes: rankedBiomes.slice(0, 4),
-    topPets: rankedPets.slice(0, 10),
+    topEggs: rankedEggs.slice(0, 10),
+    topPets: rankedEggs.slice(0, 10), // Backwards compatibility alias
   };
 }
 
