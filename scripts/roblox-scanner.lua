@@ -13,6 +13,25 @@ local Players = game:GetService("Players")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
 
+-- Disconnect & clean up prior scanner instance if re-executed in the same session
+if _G.EggNotifierCleanup then
+    pcall(_G.EggNotifierCleanup)
+end
+
+local activeConnections = {}
+local activeThreads = {}
+
+_G.EggNotifierCleanup = function()
+    for _, conn in ipairs(activeConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    for _, th in ipairs(activeThreads) do
+        pcall(function() task.cancel(th) end)
+    end
+    _G.EggNotifierCleanup = nil
+    print("[Notifier] 🧹 Cleaned up prior scanner instance.")
+end
+
 -- Public Railway URL:
 local BOT_URL = "https://discord-egg-notifier-production.up.railway.app"
 
@@ -25,7 +44,7 @@ local lastRequiredPets = {}
 local lastBossEventTime = 0     -- Prevent double boss notifications (120s cooldown)
 local lastInGameNotifs = {}     -- Prevent in-game popup notification spam (30s cooldown)
 local recentMessages = {}       -- Message-level dedupe cache
-local watchedElements = {}      -- Track already-hooked UI elements
+local watchedElements = setmetatable({}, { __mode = "k" }) -- Weak-table for safe UI garbage collection
 local isInitializing = true     -- Skip historical announcements during startup scan
 
 -- Known Rift Banner pool descriptions
@@ -230,6 +249,20 @@ local function sendAlert(endpoint, payload, dedupeDuration)
         local errMsg = (typeof(res) == "table" and (res.StatusMessage or res.status_message or res.StatusCode or res.status_code or "Failed")) or tostring(res)
         warn("[Notifier] ❌ Failed to send alert (" .. tostring(endpoint) .. "):", errMsg)
         return false
+    end
+end
+
+-- Cache pruning: prevents memory accumulation over extended play sessions
+local function pruneCaches()
+    local now = os.time()
+    for k, t in pairs(recentMessages) do
+        if now - t > 60 then recentMessages[k] = nil end
+    end
+    for k, t in pairs(lastAlerts) do
+        if now - t > 300 then lastAlerts[k] = nil end
+    end
+    for k, t in pairs(lastInGameNotifs) do
+        if now - t > 60 then lastInGameNotifs[k] = nil end
     end
 end
 
@@ -619,11 +652,12 @@ end
 
 -- Read-only chat message event (Does NOT overwrite OnIncomingMessage)
 pcall(function()
-    TextChatService.MessageReceived:Connect(function(message)
+    local conn = TextChatService.MessageReceived:Connect(function(message)
         if message and message.Text then
             handleMessage(message.Text)
         end
     end)
+    table.insert(activeConnections, conn)
 end)
 
 -- Helper: check if a descendant is a text element we should watch
@@ -636,9 +670,10 @@ local function hookTextElement(desc)
     if watchedElements[desc] then return end
     watchedElements[desc] = true
     pcall(function()
-        desc:GetPropertyChangedSignal("Text"):Connect(function()
+        local conn = desc:GetPropertyChangedSignal("Text"):Connect(function()
             handleMessage(desc.Text)
         end)
+        table.insert(activeConnections, conn)
     end)
     -- Process current text immediately (if initializing, seed dedupe cache to prevent old history alerts)
     if desc.Text and #desc.Text > 0 then
@@ -659,11 +694,12 @@ local function watchContainer(container)
             hookTextElement(desc)
         end
     end
-    container.DescendantAdded:Connect(function(desc)
+    local conn = container.DescendantAdded:Connect(function(desc)
         if isTextElement(desc) then
             hookTextElement(desc)
         end
     end)
+    table.insert(activeConnections, conn)
 end
 
 -- Watch PlayerGui (main source of in-game announcements)
@@ -689,9 +725,10 @@ isInitializing = false
 
 -- ── 6. Periodic Rift Banner & Pets Scanner (every 30 seconds) 
 -- Also re-scans PlayerGui for any new text elements that were missed
-task.spawn(function()
+local loopThread = task.spawn(function()
     while task.wait(30) do
         pcall(checkAndNotifyBanner)
+        pcall(pruneCaches)
         -- Re-scan PlayerGui for new text elements
         pcall(function()
             local p = Players.LocalPlayer
@@ -705,6 +742,7 @@ task.spawn(function()
         end)
     end
 end)
+table.insert(activeThreads, loopThread)
 task.defer(checkAndNotifyBanner)
 
 -- ── 7. Send Startup / Execution Alert ────────────────────────
