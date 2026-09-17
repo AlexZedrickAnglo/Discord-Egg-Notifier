@@ -124,7 +124,7 @@ function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), isBannerE
 /**
  * Render ASCII progress bar
  */
-function renderProgressBar(percentage, totalBlocks = 10) {
+function renderProgressBar(percentage, totalBlocks = 6) {
   const filledCount = Math.min(totalBlocks, Math.max(0, Math.round((percentage / 100) * totalBlocks)));
   const emptyCount = totalBlocks - filledCount;
   return '▰'.repeat(filledCount) + '▱'.repeat(emptyCount);
@@ -290,7 +290,7 @@ function getPrediction(activeBanner = null) {
         rarity: p.rarity,
         biome: p.biome,
         probability: Math.round(pct * 10) / 10,
-        bar: renderProgressBar(pct, 10),
+        bar: renderProgressBar(pct, 6),
       };
     })
     .sort((a, b) => b.probability - a.probability);
@@ -320,7 +320,7 @@ function getPrediction(activeBanner = null) {
       eternalDryStreak,
     },
     topBiomes: rankedBiomes.slice(0, 4),
-    topPets: rankedPets.slice(0, 6),
+    topPets: rankedPets.slice(0, 20),
   };
 }
 
