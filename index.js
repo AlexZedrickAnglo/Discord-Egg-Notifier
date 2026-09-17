@@ -74,8 +74,9 @@ loadPredictionState();
 
 /**
  * Post or update the live prediction display in the dedicated channel (1550126931100303480).
+ * Strictly edits / replaces the existing message to prevent any message flooding.
  */
-async function updatePredictionChannel(forceNew = false) {
+async function updatePredictionChannel() {
   if (!predictionChannelId) return;
 
   try {
@@ -88,29 +89,28 @@ async function updatePredictionChannel(forceNew = false) {
     const prediction = predictor.getPrediction(currentActiveBanner);
     const embed = buildPredictionEmbed(prediction);
 
-    let targetMsg = null;
-    if (livePredictionMessageId && !forceNew) {
-      targetMsg = await channel.messages.fetch(livePredictionMessageId).catch(() => null);
-    }
+    // Fetch messages in the channel to find any existing bot message
+    const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    const botMessages = recent ? Array.from(recent.values()).filter((m) => m.author.id === client.user.id) : [];
 
-    // Fallback: check recent messages in channel to avoid orphan duplicates
-    if (!targetMsg && !forceNew) {
-      const recent = await channel.messages.fetch({ limit: 10 }).catch(() => null);
-      if (recent) {
-        targetMsg = recent.find(
-          (m) => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title?.includes('Predictor')
-        );
-      }
-    }
-
-    if (targetMsg) {
+    if (botMessages.length > 0) {
+      // Use the latest bot message as the primary display
+      const targetMsg = botMessages[0];
       await targetMsg.edit({ embeds: [embed] });
       livePredictionMessageId = targetMsg.id;
-      console.log(`[prediction] 🔄 Updated live prediction display in channel <#${predictionChannelId}>`);
+      console.log(`[prediction] 🔄 Replaced/updated live prediction in channel <#${predictionChannelId}> (ID: ${targetMsg.id})`);
+
+      // Clean up any extra/stale duplicate bot messages to prevent channel flooding
+      if (botMessages.length > 1) {
+        for (let i = 1; i < botMessages.length; i++) {
+          botMessages[i].delete().catch(() => {});
+        }
+      }
     } else {
+      // Channel is completely empty of bot messages: post the initial message
       const sent = await channel.send({ embeds: [embed] });
       livePredictionMessageId = sent.id;
-      console.log(`[prediction] 🚀 Posted new live prediction display in channel <#${predictionChannelId}>`);
+      console.log(`[prediction] 🚀 Posted initial live prediction display in channel <#${predictionChannelId}>`);
     }
 
     savePredictionState({ messageId: livePredictionMessageId });
