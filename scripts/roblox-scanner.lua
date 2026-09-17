@@ -125,13 +125,32 @@ local function cleanBannerName(raw)
     return #clean > 0 and clean or nil
 end
 
--- ── 1. HTTP Request Wrapper ──────────────────────────────────
+-- ── 1. Safe, Stealth HTTP Request Wrapper ────────────────────
+-- Uses rawget + pcall to bypass any __index metamethod traps / honeypots
+local function getSafeHttpFunction()
+    local fn = nil
+    pcall(function()
+        local env = (typeof(getgenv) == "function" and getgenv()) or getfenv()
+        for _, name in ipairs({"request", "http_request"}) do
+            local candidate = rawget(env, name)
+            if typeof(candidate) == "function" then
+                fn = candidate
+                return
+            end
+        end
+        for _, libName in ipairs({"syn", "http", "fluxus"}) do
+            local lib = rawget(env, libName)
+            if typeof(lib) == "table" and typeof(rawget(lib, "request")) == "function" then
+                fn = rawget(lib, "request")
+                return
+            end
+        end
+    end)
+    return fn
+end
+
 local function httpRequest(url, payload)
-    local reqFn = (typeof(syn) == "table" and syn.request)
-        or (typeof(http) == "table" and http.request)
-        or (typeof(http_request) == "function" and http_request)
-        or (typeof(request) == "function" and request)
-        or (typeof(fluxus) == "table" and fluxus.request)
+    local reqFn = getSafeHttpFunction()
 
     if reqFn then
         local body = HttpService:JSONEncode(payload)
