@@ -46,5 +46,13 @@
     "rarity": "Secret",
     "biome": "Angels & Demons",
     "timestamp": 1726577100000
+  },
+  {
+    "eggName": "Cosmic Dragon",
+    "rarity": "Secret",
+    "biome": "Cosmic",
+    "timestamp": 1789653570442,
+    "isBannerEgg": false,
+    "bannerName": null
   }
 ]
