@@ -192,32 +192,65 @@ function buildRiftBossEmbed({ bossName, biome, health, timeLimit, image }) {
   return embed;
 }
 
+const BANNER_INFO = {
+  'Riftborn': {
+    egg: 'Riftborn Egg (45% chance)',
+    biomes: 'Jungle, Snow, Volcano, Abyss Ocean',
+    exclusive: 'Riftborn Pets',
+  },
+  'Riftbeasts': {
+    egg: 'Riftbeasts Egg (35% chance)',
+    biomes: 'Volcano, Abyss Ocean, Prehistoric, Cosmic',
+    exclusive: 'Riftbeast Pets',
+  },
+  'Shattered Rift': {
+    egg: 'Shattered Rift Egg (20% chance)',
+    biomes: 'Prehistoric, Cosmic, Cherry Blossom, Titan Temple',
+    exclusive: 'Shattered Colossus (0.5% Divine)',
+  },
+};
+
 /**
  * Build a Rift Banner rotation embed.
  */
 function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jobId }) {
-  const name = bannerName || 'Rift Banner';
+  const name = bannerName || 'Riftborn';
   const joinUrl = jobId
     ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
     : null;
+
+  const info = BANNER_INFO[name];
 
   const embed = new EmbedBuilder()
     .setTitle(`📜  Active Rift Banner — ${name}`)
     .setColor(0x9B59B6) // Amethyst Purple
     .setDescription(
       `The Rift Machine banner is currently **${name}**!\n` +
+      `*This message automatically edits in-place when the active banner rotates.*\n` +
       (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : '')
     )
     .addFields(
       { name: '🏷️ Active Banner',   value: `**${name}**`, inline: true },
       { name: '⏳ Rotation Cycle',  value: timeRemaining ? `⏳ ${timeRemaining}` : 'Rotates every 3 hours', inline: true },
     )
-    .setFooter({ text: 'Steal An Egg Notifier • Rift Machine Banner' })
+    .setFooter({ text: 'Steal An Egg Notifier • Live Rift Machine Banner' })
     .setTimestamp();
 
+  if (info) {
+    embed.addFields(
+      { name: '🥚 Banner Egg Pool', value: info.egg, inline: true },
+      { name: '🗺️ Active Biomes',    value: info.biomes, inline: true },
+      { name: '👑 Exclusive Pet',   value: info.exclusive, inline: true },
+    );
+  }
+
+  if (requiredPets && requiredPets.length > 0) {
+    const petList = Array.isArray(requiredPets) ? requiredPets.join(', ') : requiredPets;
+    embed.addFields({ name: '🥩 Required Sacrifice Pets', value: petList, inline: false });
+  }
 
   if (details) {
-    embed.addFields({ name: '🎁 Egg & Reward Info', value: details, inline: false });
+    embed.addFields({ name: '🎁 Additional Details', value: details, inline: false });
   }
 
   return embed;
@@ -263,9 +296,7 @@ function buildPredictionEmbed(data) {
     topPets,
   } = data;
 
-  const countdownText = nextSpawnEtaSeconds > 0
-    ? `<t:${nextSpawnUnix}:R> (\`~${Math.ceil(nextSpawnEtaSeconds / 60)}m\`)`
-    : `Imminent (<t:${nextSpawnUnix}:R>)`;
+  const predictedClockTime = `<t:${nextSpawnUnix}:t> (<t:${nextSpawnUnix}:R>)`;
 
   const petLines = topPets.slice(0, 10).map((p, idx) => {
     const icon = RARITY_EMOJI[p.rarity.toLowerCase()] || '🥚';
@@ -287,11 +318,11 @@ function buildPredictionEmbed(data) {
       `Estimates specific pet probabilities, biome rotations & rarity pity across all servers.`
     )
     .addFields(
-      { name: '⏳ Next Estimated Spawn', value: countdownText, inline: true },
+      { name: '⏰ Predicted Time Spawn', value: predictedClockTime, inline: true },
       { name: '⏱️ Average Spawn Pace', value: `\`~${Math.round(averageIntervalSeconds / 60)}m\` (\`${averageIntervalSeconds}s\`)`, inline: true },
       { name: '📜 Last Global Spawn', value: lastSpawnDesc, inline: false },
+      { name: '🎯 Top 10 Highest Probability Pets (Updated on Egg Reset)', value: petLines || 'No pets available', inline: false },
       { name: '📊 Rarity Likelihood (Pity Adjusted)', value: `${rarityLine}\n*Dry-Streaks:* Divine: \`${pity.divineDryStreak}\` spawns | Eternal: \`${pity.eternalDryStreak}\` spawns`, inline: false },
-      { name: '🎯 Top 10 Highest Probability Pets', value: petLines || 'No pets available', inline: false },
       { name: '🗺️ Likely Biome Rotations', value: biomeLine || 'Unknown', inline: false },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Global AI Predictor' })

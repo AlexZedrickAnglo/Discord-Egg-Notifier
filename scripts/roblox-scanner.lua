@@ -14,21 +14,23 @@ local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
 
 -- Disconnect & clean up prior scanner instance if re-executed in the same session
-if _G.EggNotifierCleanup then
-    pcall(_G.EggNotifierCleanup)
+local cleanupKey = "__rbx_sc_clean_fn"
+local globalEnv = (typeof(getgenv) == "function" and getgenv()) or _G
+if globalEnv[cleanupKey] then
+    pcall(globalEnv[cleanupKey])
 end
 
 local activeConnections = {}
 local activeThreads = {}
 
-_G.EggNotifierCleanup = function()
+globalEnv[cleanupKey] = function()
     for _, conn in ipairs(activeConnections) do
         pcall(function() conn:Disconnect() end)
     end
     for _, th in ipairs(activeThreads) do
         pcall(function() task.cancel(th) end)
     end
-    _G.EggNotifierCleanup = nil
+    globalEnv[cleanupKey] = nil
     print("[Notifier] 🧹 Cleaned up prior scanner instance.")
 end
 
@@ -264,6 +266,15 @@ local function pruneCaches()
     for k, t in pairs(lastInGameNotifs) do
         if now - t > 60 then lastInGameNotifs[k] = nil end
     end
+
+    -- Prune disconnected signals to prevent connection table accumulation
+    local liveConns = {}
+    for _, conn in ipairs(activeConnections) do
+        if conn and conn.Connected then
+            table.insert(liveConns, conn)
+        end
+    end
+    activeConnections = liveConns
 end
 
 -- ── 2. Biome & Pet Resolution ────────────────────────────────
@@ -728,23 +739,11 @@ end)
 -- Initial scan complete: enable live alerts for newly spawned events
 isInitializing = false
 
--- ── 6. Periodic Rift Banner & Pets Scanner (every 30 seconds) 
--- Also re-scans PlayerGui for any new text elements that were missed
+-- ── 6. Periodic Rift Banner Scanner & Cache Pruner (every 30 seconds) 
 local loopThread = task.spawn(function()
     while task.wait(30) do
         pcall(checkAndNotifyBanner)
         pcall(pruneCaches)
-        -- Re-scan PlayerGui for new text elements
-        pcall(function()
-            local p = Players.LocalPlayer
-            if p and p:FindFirstChild("PlayerGui") then
-                for _, desc in ipairs(p.PlayerGui:GetDescendants()) do
-                    if isTextElement(desc) then
-                        hookTextElement(desc)
-                    end
-                end
-            end
-        end)
     end
 end)
 table.insert(activeThreads, loopThread)

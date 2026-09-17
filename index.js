@@ -125,6 +125,96 @@ async function updatePredictionChannel() {
   }
 }
 
+// ── Rift Banner Dedicated Channel (1550149335088496755) ──────
+let riftBannerChannelId     = process.env.RIFT_BANNER_CHANNEL_ID || '1550149335088496755';
+let liveBannerMessageId     = null;
+const BANNER_STATE_FILE     = path.join(__dirname, 'data', 'banner-state.json');
+
+function loadBannerState() {
+  try {
+    if (fs.existsSync(BANNER_STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(BANNER_STATE_FILE, 'utf8'));
+      if (data && data.messageId) {
+        liveBannerMessageId = data.messageId;
+      }
+      if (data && data.bannerName) {
+        currentActiveBanner = data.bannerName;
+      }
+    }
+  } catch (err) {
+    console.error('[banner] Error loading state:', err.message);
+  }
+}
+
+function saveBannerState(state) {
+  try {
+    fs.writeFileSync(BANNER_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[banner] Error saving state:', err.message);
+  }
+}
+
+loadBannerState();
+
+/**
+ * Post or update the live Rift Banner display in dedicated channel (1550149335088496755).
+ * Strictly edits the existing message in-place to prevent channel flooding.
+ */
+async function updateBannerChannel({ bannerName, requiredPets, details, timeRemaining, jobId } = {}) {
+  if (!riftBannerChannelId) return;
+
+  const targetBanner = bannerName || currentActiveBanner || 'Riftborn';
+  currentActiveBanner = targetBanner;
+
+  try {
+    const channel = await client.channels.fetch(riftBannerChannelId).catch(() => null);
+    if (!channel) {
+      console.warn(`[banner] Channel ${riftBannerChannelId} not found or inaccessible.`);
+      return;
+    }
+
+    const embed = buildBannerEmbed({
+      bannerName: targetBanner,
+      requiredPets,
+      details,
+      timeRemaining,
+      jobId,
+    });
+
+    let targetMsg = null;
+    if (liveBannerMessageId) {
+      targetMsg = await channel.messages.fetch(liveBannerMessageId).catch(() => null);
+    }
+
+    if (!targetMsg) {
+      const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+      const botMessages = recent ? Array.from(recent.values()).filter((m) => m.author.id === client.user.id) : [];
+      if (botMessages.length > 0) {
+        targetMsg = botMessages[0];
+        if (botMessages.length > 1) {
+          for (let i = 1; i < botMessages.length; i++) {
+            botMessages[i].delete().catch(() => {});
+          }
+        }
+      }
+    }
+
+    if (targetMsg) {
+      await targetMsg.edit({ embeds: [embed] });
+      liveBannerMessageId = targetMsg.id;
+      console.log(`[banner] 🔄 Updated Rift Banner in channel <#${riftBannerChannelId}> (${targetMsg.id})`);
+    } else {
+      const sent = await channel.send({ embeds: [embed] });
+      liveBannerMessageId = sent.id;
+      console.log(`[banner] 🚀 Posted initial Rift Banner in channel <#${riftBannerChannelId}> (${sent.id})`);
+    }
+
+    saveBannerState({ messageId: liveBannerMessageId, bannerName: targetBanner });
+  } catch (err) {
+    console.error('[banner] Failed to update banner channel:', err.message);
+  }
+}
+
 /** Setter injected into the /setchannel command. */
 function setNotifyChannel(id) {
   notifyChannelId = id;
@@ -609,7 +699,7 @@ app.post('/api/notify-ready', async (req, res) => {
   }
 });
 
-// Rift Machine Banner alert endpoint
+// Rift Machine Banner alert endpoint — updates in-place in dedicated channel (1550149335088496755)
 app.post('/api/notify-banner', async (req, res) => {
   const { bannerName, requiredPets, details, timeRemaining, jobId } = req.body ?? {};
 
@@ -620,23 +710,16 @@ app.post('/api/notify-banner', async (req, res) => {
   currentActiveBanner = bannerName;
 
   try {
-    const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
-    if (!channel) throw new Error('Notification channel not available.');
-
-    const embed    = buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jobId });
-    const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
-
-    const header = `${rolePing} 📜 **ACTIVE RIFT BANNER:** **${bannerName}** is now active at the Rift Machine!`;
-
-    await channel.send({ content: header, embeds: [embed] });
+    // Strictly edits in place in channel 1550149335088496755 (zero channel flooding)
+    await updateBannerChannel({ bannerName, requiredPets, details, timeRemaining, jobId });
 
     // Live update predictions in dedicated channel if banner changes
     updatePredictionChannel().catch((err) => console.error('[prediction] Banner update error:', err.message));
 
-    return res.status(200).json({ ok: true, message: 'Banner alert sent.' });
+    return res.status(200).json({ ok: true, message: 'Banner updated in dedicated channel.' });
   } catch (err) {
     console.error('[webhook/banner] Error:', err.message);
-    return res.status(500).json({ error: err.message || 'Failed to send alert.' });
+    return res.status(500).json({ error: err.message || 'Failed to update banner.' });
   }
 });
 
@@ -755,6 +838,7 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`   Notification channel : ${notifyChannelId}`);
   console.log(`   Prediction channel   : ${predictionChannelId}`);
+  console.log(`   Rift banner channel  : ${riftBannerChannelId}`);
   console.log(`   Role picker channel  : ${ROLE_CHANNEL_ID}`);
   console.log(`   Alert role           : ${EGG_ROLE_ID ?? '(none)'}`);
   console.log(`   Auto-role (members)  : ${AUTOROLE_ID}`);
@@ -771,6 +855,14 @@ client.once('ready', () => {
 
     // Initial live prediction display in dedicated channel
     updatePredictionChannel().catch((err) => console.error('[prediction] Startup update error:', err.message));
+
+    // Periodic live prediction countdown tick (every 60s) to keep time and top 10 fresh
+    setInterval(() => {
+      updatePredictionChannel().catch(() => {});
+    }, 60_000);
+
+    // Initial Rift Banner display in dedicated channel (1550149335088496755)
+    updateBannerChannel().catch((err) => console.error('[banner] Startup update error:', err.message));
 
     // Initial role picker setup / verification in role channel
     initRolePickerChannel().catch((err) => console.error('[roles] Startup update error:', err.message));
