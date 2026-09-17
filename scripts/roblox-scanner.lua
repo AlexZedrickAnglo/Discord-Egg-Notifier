@@ -22,6 +22,8 @@ local lastBannerState = nil
 local lastBannerNotifyTime = 0
 local lastActiveBanner = nil
 local lastRequiredPets = {}
+local lastBossEventTime = 0     -- Prevent double boss notifications (120s cooldown)
+local lastInGameNotifs = {}     -- Prevent in-game popup notification spam (30s cooldown)
 local recentMessages = {}       -- Message-level dedupe cache
 local watchedElements = {}      -- Track already-hooked UI elements
 local isInitializing = true     -- Skip historical announcements during startup scan
@@ -153,9 +155,16 @@ local function httpRequest(url, payload)
     end
 end
 
--- Helper: show in-game notification with automatic retry if CoreScripts not ready
+-- Helper: show in-game notification with automatic retry if CoreScripts not ready (throttled to prevent spam)
 local function notifyUser(title, text, duration)
     duration = duration or 5
+    local key = tostring(title) .. "_" .. tostring(text)
+    local now = os.time()
+    if lastInGameNotifs[key] and (now - lastInGameNotifs[key] < 30) then
+        return -- Skip duplicate in-game notification popup
+    end
+    lastInGameNotifs[key] = now
+
     task.spawn(function()
         for i = 1, 6 do
             local ok = pcall(function()
@@ -225,6 +234,38 @@ local function resolveBiomeForPet(petName, rawText)
         end
     end
     return "Unknown Biome"
+end
+
+local function cleanBiomeName(raw)
+    if not raw or typeof(raw) ~= "string" then return "Unknown" end
+    local cleaned = raw:gsub("[%z\1-\31\127]", ""):gsub("^%s+", ""):gsub("[%s!%.]+$", "")
+    local lower = cleaned:lower()
+    if lower:find("demon") or lower:find("angel") then
+        return "Angels & Demons"
+    elseif lower:find("cherry") then
+        return "Cherry Blossom"
+    elseif lower:find("abyss") then
+        return "Abyss Ocean"
+    elseif lower:find("titan") then
+        return "Titan Temple"
+    elseif lower:find("cosmic") then
+        return "Cosmic"
+    elseif lower:find("prehistoric") then
+        return "Prehistoric"
+    elseif lower:find("volcano") then
+        return "Volcano"
+    elseif lower:find("jungle") then
+        return "Jungle"
+    elseif lower:find("snow") then
+        return "Snow"
+    elseif lower:find("desert") then
+        return "Desert"
+    elseif lower:find("forest") then
+        return "Forest"
+    elseif lower:find("lake") then
+        return "Lake"
+    end
+    return cleaned
 end
 
 -- ── 3. Rift Machine & Banner Scanner (Dynamic UI Reading) ────
@@ -464,7 +505,7 @@ local function handleMessage(text)
     end
 
     if eggName and biome then
-        local cleanBiome = biome:gsub("[%z\1-\31\127]", ""):gsub("^%s+", ""):gsub("[%s!%.]+$", "")
+        local cleanBiome = cleanBiomeName(biome)
 
         local isBannerEgg = false
         local matchingBanner = lastActiveBanner
@@ -518,6 +559,13 @@ local function handleMessage(text)
     -- ── Pattern 2: Rift Boss / Abyss Overlord Spawn ───────────
     local lower = text:lower()
     if (lower:find("rift") or lower:find("abyss")) and lower:find("spawn") then
+        local now = os.time()
+        -- Cooldown: prevent duplicate boss alerts and in-game popups within 120 seconds
+        if (now - lastBossEventTime < 120) then
+            return
+        end
+        lastBossEventTime = now
+
         local bossName = lower:find("abyss") and "Abyss Overlord" or "Rift Boss"
         local bossBiome = "Unknown"
         local knownBiomes = {"Abyss Ocean", "Cherry Blossom", "Titan Temple", "Angels & Demons", "Prehistoric", "Cosmic", "Volcano", "Jungle", "Snow", "Forest", "Lake", "Desert"}
@@ -530,8 +578,10 @@ local function handleMessage(text)
         if bossBiome == "Unknown" then
             local bMatch = text:match("in%s+([%a%s&]+)")
             if bMatch then
-                bossBiome = bMatch:gsub("^%s+", ""):gsub("[%s!%.]+$", "")
+                bossBiome = cleanBiomeName(bMatch)
             end
+        else
+            bossBiome = cleanBiomeName(bossBiome)
         end
 
         -- Print structured log tag for roblox-log-watcher.js (F9 Console Bridge)
@@ -540,7 +590,7 @@ local function handleMessage(text)
         sendAlert("/api/notify-boss", {
             bossName = bossName,
             biome    = bossBiome
-        }, 30)
+        }, 120)
 
         notifyUser("Boss Spawned!", bossName .. " in " .. bossBiome, 6)
     end

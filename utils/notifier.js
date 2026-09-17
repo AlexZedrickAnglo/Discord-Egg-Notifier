@@ -247,6 +247,59 @@ function buildScannerReadyEmbed({ account, jobId }) {
     .setTimestamp();
 }
 
+/**
+ * Build an AI Egg & Specific Pet Predictor embed.
+ */
+function buildPredictionEmbed(data) {
+  const {
+    totalLogged,
+    lastSpawn,
+    nextSpawnUnix,
+    nextSpawnEtaSeconds,
+    averageIntervalSeconds,
+    rarityOdds,
+    pity,
+    topBiomes,
+    topPets,
+  } = data;
+
+  const countdownText = nextSpawnEtaSeconds > 0
+    ? `<t:${nextSpawnUnix}:R> (\`~${Math.ceil(nextSpawnEtaSeconds / 60)}m\`)`
+    : `Imminent (<t:${nextSpawnUnix}:R>)`;
+
+  const petLines = topPets.map((p, idx) => {
+    const icon = RARITY_EMOJI[p.rarity.toLowerCase()] || '🥚';
+    return `**${idx + 1}.** ${icon} **${p.name}** (\`${p.rarity}\` • ${p.biome})\n\`${p.bar}\` **${p.probability}%**`;
+  }).join('\n\n');
+
+  const rarityLine = `👑 **Divine:** \`${rarityOdds.Divine}%\` | 💎 **Eternal:** \`${rarityOdds.Eternal}%\` | 🔮 **Secret:** \`${rarityOdds.Secret}%\``;
+  const biomeLine = topBiomes.map((b) => `• **${b.biome}:** \`${b.probability}%\` *(dry: ${b.dryStreak} spawns)*`).join('\n');
+
+  const lastSpawnDesc = lastSpawn
+    ? `**${lastSpawn.eggName}** (\`${lastSpawn.rarity}\` in **${lastSpawn.biome}**) • <t:${Math.floor(lastSpawn.timestamp / 1000)}:R>`
+    : 'None recorded yet';
+
+  const embed = new EmbedBuilder()
+    .setTitle('🔮  Global Egg & Specific Pet Predictor')
+    .setColor(0x9B59B6)
+    .setDescription(
+      `AI-powered global spawn forecaster trained on **${totalLogged} logged spawns**.\n` +
+      `Estimates specific pet probabilities, biome rotations & rarity pity across all servers.`
+    )
+    .addFields(
+      { name: '⏳ Next Estimated Spawn', value: countdownText, inline: true },
+      { name: '⏱️ Average Spawn Pace', value: `\`~${Math.round(averageIntervalSeconds / 60)}m\` (\`${averageIntervalSeconds}s\`)`, inline: true },
+      { name: '📜 Last Global Spawn', value: lastSpawnDesc, inline: false },
+      { name: '📊 Rarity Likelihood (Pity Adjusted)', value: `${rarityLine}\n*Dry-Streaks:* Divine: \`${pity.divineDryStreak}\` spawns | Eternal: \`${pity.eternalDryStreak}\` spawns`, inline: false },
+      { name: '🎯 Top Specific Pet Candidates', value: petLines || 'No pets available', inline: false },
+      { name: '🗺️ Likely Biome Rotations', value: biomeLine || 'Unknown', inline: false },
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Global AI Predictor' })
+    .setTimestamp();
+
+  return embed;
+}
+
 module.exports = {
   RARITY_COLORS,
   RARITY_EMOJI,
@@ -259,4 +312,5 @@ module.exports = {
   buildRiftBossEmbed,
   buildBannerEmbed,
   buildScannerReadyEmbed,
+  buildPredictionEmbed,
 };

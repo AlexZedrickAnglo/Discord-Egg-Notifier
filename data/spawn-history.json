@@ -1,0 +1,50 @@
+[
+  {
+    "eggName": "King Snake",
+    "rarity": "Secret",
+    "biome": "Jungle",
+    "timestamp": 1726574400000
+  },
+  {
+    "eggName": "Phoenix",
+    "rarity": "Eternal",
+    "biome": "Volcano",
+    "timestamp": 1726574760000
+  },
+  {
+    "eggName": "Yeti",
+    "rarity": "Secret",
+    "biome": "Snow",
+    "timestamp": 1726575120000
+  },
+  {
+    "eggName": "El Maja",
+    "rarity": "Eternal",
+    "biome": "Abyss Ocean",
+    "timestamp": 1726575480000
+  },
+  {
+    "eggName": "Unicorn",
+    "rarity": "Divine",
+    "biome": "Cosmic",
+    "timestamp": 1726575900000
+  },
+  {
+    "eggName": "Mutant Shark",
+    "rarity": "Secret",
+    "biome": "Titan Temple",
+    "timestamp": 1726576300000
+  },
+  {
+    "eggName": "Stag",
+    "rarity": "Secret",
+    "biome": "Cherry Blossom",
+    "timestamp": 1726576700000
+  },
+  {
+    "eggName": "Gargoyle",
+    "rarity": "Secret",
+    "biome": "Angels & Demons",
+    "timestamp": 1726577100000
+  }
+]

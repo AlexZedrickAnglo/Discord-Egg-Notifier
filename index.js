@@ -29,6 +29,7 @@ const {
   buildBannerEmbed,
   buildScannerReadyEmbed,
 } = require('./utils/notifier');
+const predictor = require('./utils/predictor');
 
 // ═════════════════════════════════════════════════════════════
 //  1.  GLOBAL STATE
@@ -37,6 +38,12 @@ const botStartTime    = Date.now();
 let notifyChannelId   = process.env.NOTIFY_CHANNEL_ID;
 let lastKnownUpdated  = null;
 const EGG_ROLE_ID     = process.env.EGG_ROLE_ID;
+let currentActiveBanner = null;
+let lastBossAlertTime   = 0;
+let lastBossAlertInfo   = null;
+const BOSS_DEDUPE_MS    = 120_000; // 2 minutes lockout
+const recentEggAlerts   = new Map();
+const EGG_DEDUPE_MS     = 15_000;  // 15 seconds lockout
 
 /** Setter injected into the /setchannel command. */
 function setNotifyChannel(id) {
@@ -182,17 +189,26 @@ app.use(express.json());
  * Helper: Send Rift Boss alert to Discord with role ping.
  */
 async function sendRiftBossAlert({ bossName, biome, health, timeLimit, image }) {
-  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
-  if (!channel) throw new Error('Notification channel not available.');
-
   const boss        = bossName || 'Rift Boss';
   const targetBiome = biome || 'Unknown';
+
+  const now = Date.now();
+  if (now - lastBossAlertTime < BOSS_DEDUPE_MS) {
+    console.log(`[webhook/boss] ⏳ Duplicate boss alert suppressed: "${boss}" in "${targetBiome}" (prior: "${lastBossAlertInfo?.boss}" in "${lastBossAlertInfo?.targetBiome}" ${Math.round((now - lastBossAlertTime) / 1000)}s ago)`);
+    return false;
+  }
+  lastBossAlertTime = now;
+  lastBossAlertInfo = { boss, targetBiome, timestamp: now };
+
+  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+  if (!channel) throw new Error('Notification channel not available.');
 
   const embed    = buildRiftBossEmbed({ bossName: boss, biome: targetBiome, health, timeLimit, image });
   const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
   const header   = `${rolePing} 🌀 ⚔️ **RIFT BOSS SPAWNED:** **${boss}** in **${targetBiome}**!`;
 
   await channel.send({ content: header, embeds: [embed] });
+  return true;
 }
 
 // Rift Boss alert endpoints
@@ -243,6 +259,8 @@ app.post('/api/notify-banner', async (req, res) => {
   if (!bannerName) {
     return res.status(400).json({ error: 'Missing required field: bannerName' });
   }
+
+  currentActiveBanner = bannerName;
 
   try {
     const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
@@ -304,6 +322,25 @@ app.post('/api/notify-egg', async (req, res) => {
   const dbMatch = findEgg(eggName);
   const finalRarity = rarity  || dbMatch?.rarity || 'Unknown';
   const finalBiome  = biome   || dbMatch?.biome  || 'Unknown';
+
+  // Server-side egg deduplication (15s lockout)
+  const dedupeKey = `${(eggName || '').toLowerCase().trim()}_${(finalBiome || '').toLowerCase().trim()}`;
+  const now = Date.now();
+  if (recentEggAlerts.has(dedupeKey) && (now - recentEggAlerts.get(dedupeKey) < EGG_DEDUPE_MS)) {
+    console.log(`[webhook/egg] ⏳ Duplicate egg alert suppressed: "${eggName}" in "${finalBiome}"`);
+    return res.status(200).json({ ok: true, suppressed: true, message: 'Duplicate egg alert suppressed.' });
+  }
+  recentEggAlerts.set(dedupeKey, now);
+
+  // Feed into global AI predictor
+  predictor.recordSpawn({
+    eggName,
+    rarity: finalRarity,
+    biome: finalBiome,
+    timestamp: now,
+    isBannerEgg,
+    bannerName: bannerName || currentActiveBanner,
+  });
 
   try {
     const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
