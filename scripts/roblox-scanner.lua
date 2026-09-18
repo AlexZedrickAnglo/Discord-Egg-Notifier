@@ -15,12 +15,11 @@ local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
 local localPlayer = Players.LocalPlayer
 if not localPlayer then
-    pcall(function()
-        localPlayer = Players.PlayerAdded:Wait()
-    end)
-    if not localPlayer then
-        localPlayer = Players.LocalPlayer
+    local startWait = os.clock()
+    while not Players.LocalPlayer and (os.clock() - startWait < 5) do
+        task.wait(0.1)
     end
+    localPlayer = Players.LocalPlayer
 end
 
 -- Disconnect & clean up prior scanner instance if re-executed in the same session
@@ -110,6 +109,7 @@ local PET_TO_BIOME = {
     ["Nightflame"] = "Titan Temple",
     ["ArchAngel"] = "Angels & Demons",
     ["World Burner"] = "Angels & Demons",
+    ["Shattered Colossus"] = "Rift Machine",
     -- Jungle
     ["Snake"] = "Jungle", ["Frog"] = "Jungle", ["Monkey"] = "Jungle", ["Parrot"] = "Jungle", ["Jaguar"] = "Jungle", ["Chameleon"] = "Jungle", ["Toucan"] = "Jungle",
     -- Snow
@@ -134,10 +134,64 @@ local PET_TO_BIOME = {
     ["Imp"] = "Angels & Demons", ["Cherub"] = "Angels & Demons", ["Seraph"] = "Angels & Demons", ["Demon"] = "Angels & Demons", ["Angel"] = "Angels & Demons", ["Fallen Angel"] = "Angels & Demons",
 }
 
--- Pre-indexed lowercase map for fast O(1) pet lookup (avoids ~70 string allocations per search)
+-- Definitive Pet to Canonical Rarity mapping
+local PET_RARITIES = {
+    -- Divine
+    ["Unicorn"] = "Divine",
+    ["Kitsune"] = "Divine",
+    ["Nightflame"] = "Divine",
+    ["ArchAngel"] = "Divine",
+    ["World Burner"] = "Divine",
+    ["Shattered Colossus"] = "Divine",
+    -- Eternal
+    ["Ice Dragon"] = "Eternal",
+    ["Phoenix"] = "Eternal",
+    ["Lava Dragon"] = "Eternal",
+    ["El Maja"] = "Eternal",
+    ["Mosasaurus"] = "Eternal",
+    ["Eternal Lunar Dragon"] = "Eternal",
+    ["Oni Tiger"] = "Eternal",
+    ["Gorilla King"] = "Eternal",
+    ["Skeleton Horse"] = "Eternal",
+    ["Pegasus"] = "Eternal",
+    -- Secret
+    ["King Snake"] = "Secret",
+    ["Yeti"] = "Secret",
+    ["Cerberus"] = "Secret",
+    ["Kraken"] = "Secret",
+    ["Tralaledon"] = "Secret",
+    ["T-Rex"] = "Secret",
+    ["Cosmic Dragon"] = "Secret",
+    ["Cosmic Skeleton Boss"] = "Secret",
+    ["Stag"] = "Secret",
+    ["Mutant Shark"] = "Secret",
+    ["Gargoyle"] = "Secret",
+    ["RazorFang"] = "Secret",
+    ["Pure Jellyfish"] = "Secret",
+    ["Centaur"] = "Secret",
+    -- Rift Eggs
+    ["Riftborn"] = "Rift",
+    ["Riftbeasts"] = "Rift",
+    ["Shattered Rift"] = "Rift",
+}
+
+-- Pre-indexed lowercase maps for fast O(1) lookups
 local LOWER_PET_TO_BIOME = {}
+local SORTED_PET_KEYS = {}
 for pet, biome in pairs(PET_TO_BIOME) do
-    LOWER_PET_TO_BIOME[pet:lower()] = biome
+    local pLow = pet:lower()
+    LOWER_PET_TO_BIOME[pLow] = biome
+    table.insert(SORTED_PET_KEYS, pLow)
+end
+-- Sort pet keys by length descending so longer/more specific names (e.g. "Pure Jellyfish")
+-- always match before shorter substrings (e.g. "Jellyfish")
+table.sort(SORTED_PET_KEYS, function(a, b)
+    return #a > #b
+end)
+
+local LOWER_PET_RARITIES = {}
+for pet, rarity in pairs(PET_RARITIES) do
+    LOWER_PET_RARITIES[pet:lower()] = rarity
 end
 
 local KNOWN_BIOMES = {
@@ -163,9 +217,10 @@ local BIOME_KEYWORD_MAP = {
 }
 
 -- Known Steal An Egg rarities (single-word prefixes)
+-- Note: "Cosmic" is excluded because it is a Biome, not a rarity, which prevents stripping from "Cosmic Dragon"
 local KNOWN_RARITIES = {
     ["Common"] = true, ["Uncommon"] = true, ["Rare"] = true, ["Epic"] = true,
-    ["Legendary"] = true, ["Mythic"] = true, ["Cosmic"] = true,
+    ["Legendary"] = true, ["Mythic"] = true, ["Rift"] = true,
     ["Secret"] = true, ["Eternal"] = true, ["Divine"] = true, ["Ultra"] = true,
 }
 
@@ -195,18 +250,20 @@ end
 local function detectSafeHttpFunction()
     local fn = nil
     pcall(function()
+        if typeof(request) == "function" then fn = request return end
+        if typeof(http_request) == "function" then fn = http_request return end
         local env = (typeof(getgenv) == "function" and getgenv()) or getfenv()
         for _, name in ipairs({"request", "http_request"}) do
-            local candidate = rawget(env, name)
+            local candidate = env[name]
             if typeof(candidate) == "function" then
                 fn = candidate
                 return
             end
         end
         for _, libName in ipairs({"syn", "http", "fluxus"}) do
-            local lib = rawget(env, libName)
-            if typeof(lib) == "table" and typeof(rawget(lib, "request")) == "function" then
-                fn = rawget(lib, "request")
+            local lib = env[libName]
+            if typeof(lib) == "table" and typeof(lib.request) == "function" then
+                fn = lib.request
                 return
             end
         end
@@ -345,9 +402,9 @@ local function resolveBiomeForPet(petName, rawText)
     if LOWER_PET_TO_BIOME[lower] then
         return LOWER_PET_TO_BIOME[lower]
     end
-    for nameLower, biome in pairs(LOWER_PET_TO_BIOME) do
+    for _, nameLower in ipairs(SORTED_PET_KEYS) do
         if lower:find(nameLower, 1, true) or nameLower:find(lower, 1, true) then
-            return biome
+            return LOWER_PET_TO_BIOME[nameLower]
         end
     end
     return "Unknown Biome"
@@ -439,8 +496,12 @@ local function scanRiftBannerAndPets()
 
     -- Optimized Container Search:
     -- 1. Check cached container first if previously identified
-    if cachedRiftContainer and cachedRiftContainer.Parent then
-        inspectContainer(cachedRiftContainer)
+    if cachedRiftContainer then
+        if cachedRiftContainer.Parent then
+            inspectContainer(cachedRiftContainer)
+        else
+            cachedRiftContainer = nil
+        end
     end
 
     -- 2. Scoped ScreenGui search inside PlayerGui
@@ -615,7 +676,7 @@ local function handleMessage(text)
 
     if rarity and eggName and biome then
         if not KNOWN_RARITIES[rarity] then
-            -- The first word was part of the egg name (e.g. "Shattered Rift Egg")
+            -- The first word was part of the egg name (e.g. "Shattered Rift Egg", "Cosmic Dragon Egg")
             eggName = rarity .. " " .. eggName
             rarity = (eggName:lower():find("rift", 1, true)) and "Rift" or "Special"
         end
@@ -629,7 +690,19 @@ local function handleMessage(text)
     end
 
     if eggName and biome then
+        -- Clean egg name and strip redundant "Egg" suffix if present
+        eggName = eggName:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+[Ee]gg$", "")
+
+        -- Resolve canonical rarity from pet database if not already specific
+        local knownRarity = LOWER_PET_RARITIES[eggName:lower()]
+        if knownRarity and (rarity == "Special" or not KNOWN_RARITIES[rarity]) then
+            rarity = knownRarity
+        end
+
         local cleanBiome = cleanBiomeName(biome)
+        if cleanBiome == "Unknown" then
+            cleanBiome = resolveBiomeForPet(eggName, text)
+        end
 
         local isBannerEgg = false
         local matchingBanner = lastActiveBanner
@@ -687,7 +760,14 @@ local function handleMessage(text)
     -- ── Pattern 2: Rift Boss / Abyss Overlord Spawn ───────────
     local lower = text:lower()
     if (lower:find("rift", 1, true) or lower:find("abyss", 1, true)) and lower:find("spawn", 1, true) then
-        local bossName = lower:find("abyss", 1, true) and "Abyss Overlord" or "Rift Boss"
+        local bossName = "Rift Boss"
+        if lower:find("abyss overlord", 1, true) or lower:find("overlord", 1, true) then
+            bossName = "Abyss Overlord"
+        elseif lower:find("rift boss", 1, true) then
+            bossName = "Rift Boss"
+        elseif lower:find("abyss", 1, true) and not lower:find("rift", 1, true) then
+            bossName = "Abyss Overlord"
+        end
         local bossBiome = "Unknown"
         for _, b in ipairs(KNOWN_BIOMES) do
             if lower:find(b:lower(), 1, true) then

@@ -1149,7 +1149,6 @@ app.post('/api/notify-egg', async (req, res) => {
   // Guard against system, scanner, or banner events hitting this endpoint
   const isSystemAlert =
     lowerRarity === 'system' ||
-    lowerRarity === 'rift' ||
     lowerName.includes('scanner') ||
     lowerName.startsWith('banner:') ||
     lowerName === 'ready' ||

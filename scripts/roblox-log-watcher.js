@@ -61,7 +61,7 @@ function getLatestLogFile() {
 
 const KNOWN_RARITIES = new Set([
   'Common', 'Uncommon', 'Rare', 'Epic',
-  'Legendary', 'Mythic', 'Cosmic',
+  'Legendary', 'Mythic', 'Rift',
   'Secret', 'Eternal', 'Divine', 'Ultra',
 ]);
 
@@ -222,15 +222,23 @@ function processLine(line) {
   }
 
   // Pattern 5: Fallback raw announcement matching
-  const rawEggMatch = line.match(/A[n]?\s+([a-zA-Z]+)\s+(.+?)\s+Egg\s+spawned\s+in\s+([^\r\n!.]+)/i);
+  const rawEggMatch = line.match(/A[n]?\s+(.+?)\s+Egg\s+spawned\s+in\s+([^\r\n!.]+)/i);
   if (rawEggMatch && !line.includes('[Watcher]')) {
-    let rarity = rawEggMatch[1].trim();
-    let eggName = rawEggMatch[2].trim();
-    const biome = rawEggMatch[3].trim();
-    const capitalizedRarity = rarity.charAt(0).toUpperCase() + rarity.slice(1).toLowerCase();
-    if (!KNOWN_RARITIES.has(capitalizedRarity)) {
-      eggName = `${rarity} ${eggName}`;
-      rarity = eggName.toLowerCase().includes('rift') ? 'Rift' : 'Special';
+    const fullEgg = rawEggMatch[1].trim();
+    const biome = rawEggMatch[2].trim();
+    const parts = fullEgg.split(/\s+/);
+    let rarity = 'Special';
+    let eggName = fullEgg;
+
+    if (parts.length > 1) {
+      const firstWord = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
+      if (KNOWN_RARITIES.has(firstWord)) {
+        rarity = firstWord;
+        eggName = parts.slice(1).join(' ');
+      }
+    }
+    if (eggName.toLowerCase().includes('rift')) {
+      rarity = 'Rift';
     }
     forwardEggAlert(rarity, eggName, biome);
     return;
