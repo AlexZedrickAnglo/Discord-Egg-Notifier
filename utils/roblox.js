@@ -17,7 +17,10 @@ async function getUniverseId() {
   if (cachedUniverseId) return cachedUniverseId;
 
   const url = `https://apis.roblox.com/universes/v1/places/${PLACE_ID}/universe`;
-  const { data } = await axios.get(url);
+  const { data } = await axios.get(url, { timeout: 8000 });
+  if (!data?.universeId) {
+    throw new Error(`Failed to resolve universeId for place ${PLACE_ID}`);
+  }
   cachedUniverseId = data.universeId;
   return cachedUniverseId;
 }
@@ -29,7 +32,7 @@ async function getUniverseId() {
 async function getGameDetails() {
   const universeId = await getUniverseId();
   const url = `https://games.roblox.com/v1/games?universeIds=${universeId}`;
-  const { data } = await axios.get(url);
+  const { data } = await axios.get(url, { timeout: 8000 });
   return data.data?.[0] ?? null;
 }
 
@@ -56,17 +59,20 @@ for (const [rarity, eggs] of Object.entries(eggDb)) {
  */
 function findEgg(query) {
   if (!query) return null;
-  const q = query.toLowerCase().trim();
+  const q = query.toLowerCase().replace(/\s+/g, ' ').trim();
   const cleanQ = q.replace(/\s+egg$/i, '').trim();
 
   // Exact match first (with or without 'egg' suffix)
   if (eggLookup.has(cleanQ)) return eggLookup.get(cleanQ);
   if (eggLookup.has(q)) return eggLookup.get(q);
 
-  // Partial / fuzzy match
-  for (const [key, entry] of eggLookup) {
-    if (key.includes(cleanQ) || cleanQ.includes(key) || key.includes(q) || q.includes(key)) {
-      return entry;
+  // Partial / fuzzy match (require at least 2 characters to avoid spurious substring matches)
+  if (cleanQ.length >= 2 || q.length >= 2) {
+    for (const [key, entry] of eggLookup) {
+      if ((cleanQ.length >= 2 && (key.includes(cleanQ) || cleanQ.includes(key))) ||
+          (q.length >= 2 && (key.includes(q) || q.includes(key)))) {
+        return entry;
+      }
     }
   }
   return null;

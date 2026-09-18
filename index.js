@@ -9,6 +9,15 @@
 // ──────────────────────────────────────────────────────────────
 require('dotenv').config();
 
+// Global process crash safety handlers to ensure high availability
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[process] ⚠️ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[process] 💥 Uncaught Exception:', err);
+});
+
 const fs      = require('fs');
 const path    = require('path');
 const cron    = require('node-cron');
@@ -35,6 +44,7 @@ const {
   buildScannerOfflineEmbed,
   buildPredictionEmbed,
   buildRolePickerEmbed,
+  buildLiveStatusEmbed,
 } = require('./utils/notifier');
 const predictor = require('./utils/predictor');
 
@@ -80,6 +90,9 @@ function savePredictionState(state) {
 
 loadPredictionState();
 
+let isUpdatingPrediction = false;
+let pendingPredictionUpdate = false;
+
 /**
  * Post or update the live prediction display in the dedicated channel (1550126931100303480).
  * Strictly edits / replaces the existing message to prevent any message flooding.
@@ -87,8 +100,14 @@ loadPredictionState();
 async function updatePredictionChannel() {
   if (!predictionChannelId) return;
 
+  if (isUpdatingPrediction) {
+    pendingPredictionUpdate = true;
+    return;
+  }
+  isUpdatingPrediction = true;
+
   try {
-    const channel = await client.channels.fetch(predictionChannelId).catch(() => null);
+    const channel = await getChannel(predictionChannelId);
     if (!channel) {
       console.warn(`[prediction] Channel ${predictionChannelId} not found or inaccessible.`);
       return;
@@ -97,33 +116,38 @@ async function updatePredictionChannel() {
     const prediction = predictor.getPrediction(currentActiveBanner);
     const embed = buildPredictionEmbed(prediction);
 
-    // Fetch messages in the channel to find any existing bot message
-    const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-    const botMessages = recent ? Array.from(recent.values()).filter((m) => m.author.id === client.user.id) : [];
+    let targetMsg = null;
+    if (livePredictionMessageId) {
+      targetMsg = await channel.messages.fetch(livePredictionMessageId).catch(() => null);
+    }
 
-    if (botMessages.length > 0) {
-      // Use the latest bot message as the primary display
-      const targetMsg = botMessages[0];
+    if (!targetMsg) {
+      const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+      const botMessages = recent ? Array.from(recent.values()).filter((m) => m.author.id === client.user.id) : [];
+      if (botMessages.length > 0) {
+        targetMsg = botMessages[0];
+      }
+    }
+
+    if (targetMsg) {
       await targetMsg.edit({ embeds: [embed] });
       livePredictionMessageId = targetMsg.id;
-      console.log(`[prediction] 🔄 Replaced/updated live prediction in channel <#${predictionChannelId}> (ID: ${targetMsg.id})`);
-
-      // Clean up any extra/stale duplicate bot messages to prevent channel flooding
-      if (botMessages.length > 1) {
-        for (let i = 1; i < botMessages.length; i++) {
-          botMessages[i].delete().catch(() => {});
-        }
-      }
+      console.log(`[prediction] 🔄 Edited live prediction in-place in channel <#${predictionChannelId}> (ID: ${targetMsg.id})`);
     } else {
-      // Channel is completely empty of bot messages: post the initial message
       const sent = await channel.send({ embeds: [embed] });
       livePredictionMessageId = sent.id;
-      console.log(`[prediction] 🚀 Posted initial live prediction display in channel <#${predictionChannelId}>`);
+      console.log(`[prediction] 🚀 Posted initial live prediction display in channel <#${predictionChannelId}> (ID: ${sent.id})`);
     }
 
     savePredictionState({ messageId: livePredictionMessageId });
   } catch (err) {
     console.error('[prediction] Failed to update prediction channel:', err.message);
+  } finally {
+    isUpdatingPrediction = false;
+    if (pendingPredictionUpdate) {
+      pendingPredictionUpdate = false;
+      setImmediate(updatePredictionChannel);
+    }
   }
 }
 
@@ -158,12 +182,21 @@ function saveBannerState(state) {
 
 loadBannerState();
 
+let isUpdatingBanner = false;
+let pendingBannerUpdate = false;
+
 /**
  * Post or update the live Rift Banner display in dedicated channel (1550149335088496755).
- * Strictly edits the existing message in-place to prevent channel flooding.
+ * Strictly edits the existing message in-place on all updates to prevent channel flooding.
  */
 async function updateBannerChannel({ bannerName, requiredPets, details, timeRemaining, jobId } = {}) {
   if (!riftBannerChannelId) return;
+
+  if (isUpdatingBanner) {
+    pendingBannerUpdate = true;
+    return;
+  }
+  isUpdatingBanner = true;
 
   const targetBanner = bannerName || currentActiveBanner || 'Riftborn';
   const isNewBanner = Boolean(
@@ -177,7 +210,7 @@ async function updateBannerChannel({ bannerName, requiredPets, details, timeRema
   const rolePing = bannerRoleId ? `<@&${bannerRoleId}>` : '';
 
   try {
-    const channel = await client.channels.fetch(riftBannerChannelId).catch(() => null);
+    const channel = await getChannel(riftBannerChannelId);
     if (!channel) {
       console.warn(`[banner] Channel ${riftBannerChannelId} not found or inaccessible.`);
       return;
@@ -197,55 +230,229 @@ async function updateBannerChannel({ bannerName, requiredPets, details, timeRema
     }
 
     if (!targetMsg) {
-      const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+      const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
       const botMessages = recent ? Array.from(recent.values()).filter((m) => m.author.id === client.user.id) : [];
       if (botMessages.length > 0) {
         targetMsg = botMessages[0];
-        if (botMessages.length > 1) {
-          for (let i = 1; i < botMessages.length; i++) {
-            botMessages[i].delete().catch(() => {});
-          }
-        }
       }
     }
 
-    if (isNewBanner) {
-      // A new banner dropped! Remove old message and post with role mention
-      if (targetMsg) {
-        await targetMsg.delete().catch(() => {});
-        targetMsg = null;
-      }
-      const header = rolePing
-        ? `${rolePing} 📜 **NEW RIFT BANNER DROPPED: ${targetBanner}!**`
-        : `📜 **NEW RIFT BANNER DROPPED: ${targetBanner}!**`;
-      const sent = await channel.send({ content: header, embeds: [embed] });
-      liveBannerMessageId = sent.id;
-      console.log(`[banner] 🚀 Posted new Rift Banner with role ping in channel <#${riftBannerChannelId}> (${sent.id})`);
+    const header = rolePing
+      ? `${rolePing} 📜 **ACTIVE RIFT BANNER: ${targetBanner}**`
+      : `📜 **ACTIVE RIFT BANNER: ${targetBanner}**`;
 
-      // Also announce in main notification channel if configured
-      if (notifyChannelId && notifyChannelId !== riftBannerChannelId) {
-        const mainChan = await client.channels.fetch(notifyChannelId).catch(() => null);
-        if (mainChan) {
-          await mainChan.send({ content: header, embeds: [embed] }).catch(() => {});
-        }
-      }
+    // Strictly edit in-place whenever a message already exists
+    if (targetMsg) {
+      await targetMsg.edit({ content: header || undefined, embeds: [embed] });
+      liveBannerMessageId = targetMsg.id;
+      console.log(`[banner] 🔄 Edited Rift Banner in-place in channel <#${riftBannerChannelId}> (ID: ${targetMsg.id})`);
     } else {
-      // Routine update: edit existing message in-place without repeated pings
-      if (targetMsg) {
-        await targetMsg.edit({ embeds: [embed] });
-        liveBannerMessageId = targetMsg.id;
-        console.log(`[banner] 🔄 Updated Rift Banner in channel <#${riftBannerChannelId}> (${targetMsg.id})`);
-      } else {
-        const header = rolePing ? `${rolePing} 📜 **ACTIVE RIFT BANNER: ${targetBanner}**` : '';
-        const sent = await channel.send({ content: header || undefined, embeds: [embed] });
-        liveBannerMessageId = sent.id;
-        console.log(`[banner] 🚀 Posted initial Rift Banner in channel <#${riftBannerChannelId}> (${sent.id})`);
+      const sent = await channel.send({ content: header || undefined, embeds: [embed] });
+      liveBannerMessageId = sent.id;
+      console.log(`[banner] 🚀 Posted initial Rift Banner in channel <#${riftBannerChannelId}> (ID: ${sent.id})`);
+    }
+
+    // Also announce in main notification channel if a new banner dropped
+    if (isNewBanner && notifyChannelId && notifyChannelId !== riftBannerChannelId) {
+      const mainChan = await getChannel(notifyChannelId);
+      if (mainChan) {
+        const announceHeader = rolePing
+          ? `${rolePing} 📜 **NEW RIFT BANNER DROPPED: ${targetBanner}!**`
+          : `📜 **NEW RIFT BANNER DROPPED: ${targetBanner}!**`;
+        await mainChan.send({ content: announceHeader, embeds: [embed] }).catch(() => {});
       }
     }
 
     saveBannerState({ messageId: liveBannerMessageId, bannerName: targetBanner });
   } catch (err) {
     console.error('[banner] Failed to update banner channel:', err.message);
+  } finally {
+    isUpdatingBanner = false;
+    if (pendingBannerUpdate) {
+      pendingBannerUpdate = false;
+      setImmediate(updateBannerChannel);
+    }
+  }
+}
+
+// ── Dedicated Bot & Scanner Status Channel (1550494247784947772) ──────
+let statusChannelId       = process.env.STATUS_CHANNEL_ID || '1550494247784947772';
+let liveStatusMessageId   = null;
+const STATUS_STATE_FILE   = path.join(__dirname, 'data', 'bot-status-state.json');
+
+function loadStatusState() {
+  try {
+    if (fs.existsSync(STATUS_STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STATUS_STATE_FILE, 'utf8'));
+      if (data && data.messageId) {
+        liveStatusMessageId = data.messageId;
+      }
+    }
+  } catch (err) {
+    console.error('[status] Error loading state:', err.message);
+  }
+}
+
+function saveStatusState(state) {
+  try {
+    fs.writeFileSync(STATUS_STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[status] Error saving state:', err.message);
+  }
+}
+
+loadStatusState();
+
+// Active scanner client tracking
+const activeScanners = new Map();
+const SCANNER_TIMEOUT_MS = 90_000; // 90 seconds timeout (heartbeats arrive every 30s)
+
+function pruneActiveScanners() {
+  const now = Date.now();
+  for (const [clientId, info] of activeScanners.entries()) {
+    if (now - info.lastSeen > SCANNER_TIMEOUT_MS) {
+      activeScanners.delete(clientId);
+    }
+  }
+  return activeScanners.size;
+}
+
+function registerScannerClient(clientId, { jobId, version } = {}) {
+  if (!clientId) return activeScanners.size;
+  activeScanners.set(clientId, {
+    lastSeen: Date.now(),
+    jobId: jobId || null,
+    version: version || '3.5',
+  });
+  return pruneActiveScanners();
+}
+
+function unregisterScannerClient(clientId) {
+  if (!clientId) return activeScanners.size;
+  activeScanners.delete(clientId);
+  return pruneActiveScanners();
+}
+
+let cachedBotUpdateInfo = null;
+function getBotUpdateInfo() {
+  if (cachedBotUpdateInfo) return cachedBotUpdateInfo;
+
+  let commitUnix = null;
+  let commitHash = null;
+  let commitMsg = null;
+
+  try {
+    const { execFileSync } = require('child_process');
+    const out = execFileSync('git', ['log', '-1', '--format=%ct|%h|%s'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (out) {
+      const parts = out.split('|');
+      commitUnix = parseInt(parts[0], 10);
+      commitHash = parts[1] || null;
+      commitMsg = parts[2] || null;
+    }
+  } catch (_) {}
+
+  if (!commitUnix || isNaN(commitUnix)) {
+    try {
+      const stat = fs.statSync(__filename);
+      commitUnix = Math.floor(stat.mtimeMs / 1000);
+    } catch (_) {
+      commitUnix = Math.floor(Date.now() / 1000);
+    }
+  }
+
+  cachedBotUpdateInfo = { commitUnix, commitHash, commitMsg };
+  return cachedBotUpdateInfo;
+}
+
+let isUpdatingStatus = false;
+let pendingStatusUpdate = false;
+
+/**
+ * Post or update the live Bot & Scanner Status in dedicated channel (1550494247784947772).
+ * Strictly edits / replaces the existing message to avoid channel flooding.
+ */
+async function updateStatusChannel() {
+  if (!statusChannelId) return;
+
+  if (isUpdatingStatus) {
+    pendingStatusUpdate = true;
+    return;
+  }
+  isUpdatingStatus = true;
+
+  try {
+    const channel = await getChannel(statusChannelId);
+    if (!channel) {
+      console.warn(`[status] Channel ${statusChannelId} not found or inaccessible.`);
+      return;
+    }
+
+    const activeUsers = pruneActiveScanners();
+    const { commitUnix, commitHash } = getBotUpdateInfo();
+
+    let gameData = null;
+    try {
+      gameData = await getGameDetails();
+    } catch (_) {}
+
+    const ping = client?.ws?.ping >= 0 ? client.ws.ping : null;
+
+    const embed = buildLiveStatusEmbed({
+      activeUsers,
+      botStartTime,
+      botUpdatedUnix: commitUnix,
+      commitHash,
+      gameData,
+      ping,
+      currentBanner: currentActiveBanner,
+    });
+
+    let targetMsg = null;
+    if (liveStatusMessageId) {
+      targetMsg = await channel.messages.fetch(liveStatusMessageId).catch(() => null);
+    }
+
+    // Sweep recent messages in the channel to locate existing message and purge any accidental duplicates
+    const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    const botMessages = recent ? Array.from(recent.values()).filter((m) => m.author.id === client.user.id) : [];
+
+    if (!targetMsg && botMessages.length > 0) {
+      targetMsg = botMessages[0];
+    }
+
+    // If more than 1 bot message exists in the dedicated channel, purge duplicates immediately
+    if (botMessages.length > 1) {
+      for (const msg of botMessages) {
+        if (targetMsg && msg.id !== targetMsg.id) {
+          msg.delete().catch(() => {});
+        }
+      }
+    }
+
+    if (targetMsg) {
+      await targetMsg.edit({ embeds: [embed] });
+      liveStatusMessageId = targetMsg.id;
+      console.log(`[status] 🔄 Edited live status message in-place in channel <#${statusChannelId}> (ID: ${targetMsg.id}) - Active users: ${activeUsers}`);
+    } else {
+      const sent = await channel.send({ embeds: [embed] });
+      liveStatusMessageId = sent.id;
+      console.log(`[status] 🚀 Posted initial live status display in channel <#${statusChannelId}> (ID: ${sent.id})`);
+    }
+
+    saveStatusState({ messageId: liveStatusMessageId });
+  } catch (err) {
+    console.error('[status] Failed to update status channel:', err.message);
+  } finally {
+    isUpdatingStatus = false;
+    if (pendingStatusUpdate) {
+      pendingStatusUpdate = false;
+      setImmediate(updateStatusChannel);
+    }
   }
 }
 
@@ -265,6 +472,7 @@ const AUTOROLE_ID           = process.env.AUTOROLE_ID           || '155014659267
 const RIFTBORN_ROLE_ID       = process.env.RIFTBORN_ROLE_ID       || '1550479648549245018';
 const RIFTBEAST_ROLE_ID      = process.env.RIFTBEAST_ROLE_ID      || '1550479705675665478';
 const SHATTERED_RIFT_ROLE_ID = process.env.SHATTERED_RIFT_ROLE_ID || '1550479734134276217';
+const RIFT_BOSS_ROLE_ID      = process.env.RIFT_BOSS_ROLE_ID      || '1550485553156333618';
 
 function getRoleForBanner(bannerName) {
   if (!bannerName) return null;
@@ -282,6 +490,7 @@ const BUTTON_ROLE_MAP = {
   role_riftborn:       RIFTBORN_ROLE_ID,
   role_riftbeast:      RIFTBEAST_ROLE_ID,
   role_shattered_rift: SHATTERED_RIFT_ROLE_ID,
+  role_rift_boss:      RIFT_BOSS_ROLE_ID,
 };
 
 const EMOJI_ROLE_MAP = {
@@ -291,6 +500,7 @@ const EMOJI_ROLE_MAP = {
   '🌌': RIFTBORN_ROLE_ID,
   '🐺': RIFTBEAST_ROLE_ID,
   '⚡': SHATTERED_RIFT_ROLE_ID,
+  '🌀': RIFT_BOSS_ROLE_ID,
 };
 
 let liveRolePickerMessageId = null;
@@ -321,13 +531,13 @@ loadRolePickerState();
 
 /**
  * Initialize or refresh the "Pick a Role" selection message in channel 1550142026941599744.
- * Includes interactive buttons and emoji reactions for all 6 roles.
+ * Includes interactive buttons and emoji reactions for all 7 roles.
  */
 async function initRolePickerChannel() {
   if (!ROLE_CHANNEL_ID) return;
 
   try {
-    const channel = await client.channels.fetch(ROLE_CHANNEL_ID).catch(() => null);
+    const channel = await getChannel(ROLE_CHANNEL_ID);
     if (!channel) {
       console.warn(`[roles] Channel ${ROLE_CHANNEL_ID} not found or inaccessible.`);
       return;
@@ -340,6 +550,7 @@ async function initRolePickerChannel() {
       riftbornRoleId:      RIFTBORN_ROLE_ID,
       riftbeastRoleId:     RIFTBEAST_ROLE_ID,
       shatteredRiftRoleId: SHATTERED_RIFT_ROLE_ID,
+      riftBossRoleId:      RIFT_BOSS_ROLE_ID,
     });
 
     const row1 = new ActionRowBuilder().addComponents(
@@ -376,6 +587,11 @@ async function initRolePickerChannel() {
         .setLabel('Shattered Rift')
         .setEmoji('⚡')
         .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('role_rift_boss')
+        .setLabel('Rift Boss')
+        .setEmoji('🌀')
+        .setStyle(ButtonStyle.Danger),
     );
 
     let targetMsg = null;
@@ -404,16 +620,16 @@ async function initRolePickerChannel() {
 
     saveRolePickerState({ messageId: liveRolePickerMessageId });
 
-    // Ensure default reactions are present for all 6 roles
-    try {
-      await targetMsg.react('🔮');
-      await targetMsg.react('💎');
-      await targetMsg.react('👑');
-      await targetMsg.react('🌌');
-      await targetMsg.react('🐺');
-      await targetMsg.react('⚡');
-    } catch (reactErr) {
-      console.warn(`[roles] ⚠️ Could not pre-add reactions (check channel permissions): ${reactErr.message}`);
+    // Ensure default reactions are present for all 7 roles (only add if missing)
+    const requiredEmojis = ['🔮', '💎', '👑', '🌌', '🐺', '⚡', '🌀'];
+    for (const emoji of requiredEmojis) {
+      try {
+        if (!targetMsg.reactions?.cache?.has(emoji)) {
+          await targetMsg.react(emoji);
+        }
+      } catch (reactErr) {
+        console.warn(`[roles] ⚠️ Could not pre-add reaction ${emoji} (check channel permissions): ${reactErr.message}`);
+      }
     }
   } catch (err) {
     console.error('[roles] ⚠️ Error initializing role picker channel:', err.message);
@@ -440,6 +656,15 @@ const client = new Client({
   ],
 });
 
+/**
+ * Helper: Resolve a Discord channel from cache first, then REST fetch.
+ * Drastically reduces REST API requests and avoids Discord rate limits.
+ */
+async function getChannel(channelId) {
+  if (!channelId) return null;
+  return client.channels.cache.get(channelId) || await client.channels.fetch(channelId).catch(() => null);
+}
+
 // ── Load slash commands ──────────────────────────────────────
 client.commands = new Collection();
 const cmdDir = path.join(__dirname, 'commands');
@@ -461,7 +686,7 @@ client.on('interactionCreate', async (interaction) => {
 
     try {
       let member = interaction.member;
-      if (!member || !member.roles || !member.roles.cache) {
+      if (!member || typeof member.roles?.add !== 'function') {
         member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
       }
 
@@ -469,9 +694,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ content: '❌ Could not resolve member details.' });
       }
 
-      const hasRole = member.roles.cache
-        ? member.roles.cache.has(roleId)
-        : (Array.isArray(member.roles) ? member.roles.includes(roleId) : false);
+      const hasRole = member.roles.cache ? member.roles.cache.has(roleId) : false;
 
       if (hasRole) {
         await member.roles.remove(roleId);
@@ -526,6 +749,7 @@ client.on('messageReactionAdd', async (reaction, user) => {
   }
 
   if (reaction.message.channelId !== ROLE_CHANNEL_ID) return;
+  if (liveRolePickerMessageId && reaction.message.id !== liveRolePickerMessageId) return;
 
   const emojiName = reaction.emoji.name;
   const roleId = EMOJI_ROLE_MAP[emojiName];
@@ -561,6 +785,7 @@ client.on('messageReactionRemove', async (reaction, user) => {
   }
 
   if (reaction.message.channelId !== ROLE_CHANNEL_ID) return;
+  if (liveRolePickerMessageId && reaction.message.id !== liveRolePickerMessageId) return;
 
   const emojiName = reaction.emoji.name;
   const roleId = EMOJI_ROLE_MAP[emojiName];
@@ -624,7 +849,7 @@ async function pollGameUpdates() {
       lastKnownUpdated = currentUpdated;
       console.log(`[poller] Game update detected → ${currentUpdated}`);
 
-      const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+      const channel = await getChannel(notifyChannelId);
       if (channel) {
         const embed = buildUpdateEmbed(game);
         await channel.send({ embeds: [embed] });
@@ -643,7 +868,7 @@ async function pollGameUpdates() {
  * Helper: send an event embed + optional role ping to the notify channel.
  */
 async function sendEventAlert(embedOpts, ping = true) {
-  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+  const channel = await getChannel(notifyChannelId);
   if (!channel) return;
 
   const embed    = buildEventEmbed(embedOpts);
@@ -721,15 +946,15 @@ async function sendRiftBossAlert({ bossName, biome, health, timeLimit, image }) 
   lastBossAlertInfo = { boss, targetBiome, timestamp: now };
 
   const targetChannelId = riftBossChannelId || notifyChannelId;
-  let channel = await client.channels.fetch(targetChannelId).catch(() => null);
+  let channel = await getChannel(targetChannelId);
   if (!channel && targetChannelId !== notifyChannelId) {
     console.warn(`[webhook/boss] Channel ${targetChannelId} not accessible, falling back to notification channel ${notifyChannelId}`);
-    channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+    channel = await getChannel(notifyChannelId);
   }
   if (!channel) throw new Error(`Rift Boss notification channel (${targetChannelId}) not available.`);
 
   const embed    = buildRiftBossEmbed({ bossName: boss, biome: targetBiome, health, timeLimit, image, timestamp: now });
-  const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
+  const rolePing = RIFT_BOSS_ROLE_ID ? `<@&${RIFT_BOSS_ROLE_ID}>` : (EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '');
   const header   = `${rolePing} 🌀 ⚔️ **RIFT BOSS SPAWNED:** **${boss}** in **${targetBiome}**! • Spawned <t:${Math.floor(now / 1000)}:R>`;
 
   await channel.send({ content: header, embeds: [embed] });
@@ -739,7 +964,11 @@ async function sendRiftBossAlert({ bossName, biome, health, timeLimit, image }) 
 
 // Rift Boss alert endpoints
 app.post('/api/notify-boss', async (req, res) => {
-  const { bossName, biome, health, timeLimit, image } = req.body ?? {};
+  const { bossName, biome, health, timeLimit, image, jobId, clientId } = req.body ?? {};
+
+  if (clientId) {
+    registerScannerClient(clientId, { jobId });
+  }
 
   if (!biome && !bossName) {
     return res.status(400).json({ error: 'Missing required field: biome or bossName' });
@@ -759,12 +988,33 @@ app.post('/api/notify-rift', (req, res) => {
   app.handle(req, res);
 });
 
+// Scanner client heartbeat endpoint (called every 30s by active in-game scanners)
+app.post('/api/scanner-heartbeat', (req, res) => {
+  const { clientId, jobId, version } = req.body ?? {};
+  if (!clientId) {
+    return res.status(400).json({ error: 'Missing required field: clientId' });
+  }
+
+  const prevCount = activeScanners.size;
+  const newCount = registerScannerClient(clientId, { jobId, version });
+
+  if (newCount !== prevCount) {
+    updateStatusChannel().catch((err) => console.error('[status] Heartbeat update error:', err.message));
+  }
+
+  return res.status(200).json({ ok: true, activeUsers: newCount });
+});
+
 // Scanner client connected/ready alert endpoint
 app.post('/api/notify-ready', async (req, res) => {
-  const { jobId } = req.body ?? {};
+  const { jobId, clientId, version } = req.body ?? {};
+
+  if (clientId) {
+    registerScannerClient(clientId, { jobId, version });
+  }
 
   try {
-    const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+    const channel = await getChannel(notifyChannelId);
     if (!channel) throw new Error('Notification channel not available.');
 
     const embed  = buildScannerReadyEmbed({ jobId });
@@ -772,8 +1022,9 @@ app.post('/api/notify-ready', async (req, res) => {
 
     await channel.send({ content: header, embeds: [embed] });
 
-    // Live update predictions in dedicated channel (1550126931100303480)
+    // Live update predictions and bot status in dedicated channels
     updatePredictionChannel().catch((err) => console.error('[prediction] Ready update error:', err.message));
+    updateStatusChannel().catch((err) => console.error('[status] Ready update error:', err.message));
 
     return res.status(200).json({ ok: true, message: 'Ready alert sent.' });
   } catch (err) {
@@ -784,16 +1035,23 @@ app.post('/api/notify-ready', async (req, res) => {
 
 // Scanner client disconnected/offline alert endpoint
 app.post('/api/notify-offline', async (req, res) => {
-  const { jobId } = req.body ?? {};
+  const { jobId, clientId } = req.body ?? {};
+
+  if (clientId) {
+    unregisterScannerClient(clientId);
+  }
 
   try {
-    const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+    const channel = await getChannel(notifyChannelId);
     if (!channel) throw new Error('Notification channel not available.');
 
     const embed  = buildScannerOfflineEmbed({ jobId });
     const header = '⚠️ **SCANNER OFFLINE:** In-game scanner has disconnected or player left the game.';
 
     await channel.send({ content: header, embeds: [embed] });
+
+    // Live update bot status immediately on scanner disconnect
+    updateStatusChannel().catch((err) => console.error('[status] Offline update error:', err.message));
 
     return res.status(200).json({ ok: true, message: 'Offline alert sent.' });
   } catch (err) {
@@ -804,7 +1062,11 @@ app.post('/api/notify-offline', async (req, res) => {
 
 // Rift Machine Banner alert endpoint — updates in-place in dedicated channel (1550149335088496755)
 app.post('/api/notify-banner', async (req, res) => {
-  const { bannerName, requiredPets, details, timeRemaining, jobId } = req.body ?? {};
+  const { bannerName, requiredPets, details, timeRemaining, jobId, clientId } = req.body ?? {};
+
+  if (clientId) {
+    registerScannerClient(clientId, { jobId });
+  }
 
   if (!bannerName) {
     return res.status(400).json({ error: 'Missing required field: bannerName' });
@@ -834,6 +1096,7 @@ app.post('/api/notify-egg', async (req, res) => {
     rarity,
     biome,
     jobId,
+    clientId,
     image,
     type,
     isBoss,
@@ -843,6 +1106,10 @@ app.post('/api/notify-egg', async (req, res) => {
     bannerName,
     requiredForPet,
   } = req.body ?? {};
+
+  if (clientId) {
+    registerScannerClient(clientId, { jobId });
+  }
 
   // If payload is actually a boss/rift event, route appropriately
   if (isBoss || type === 'boss' || type === 'rift' || bossName) {
@@ -903,7 +1170,7 @@ app.post('/api/notify-egg', async (req, res) => {
   updatePredictionChannel().catch((err) => console.error('[prediction] Spawn update error:', err.message));
 
   try {
-    const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+    const channel = await getChannel(notifyChannelId);
     if (!channel) {
       return res.status(503).json({ error: 'Notification channel not available.' });
     }
@@ -965,8 +1232,10 @@ client.once('ready', () => {
   console.log(`   Notification channel : ${notifyChannelId}`);
   console.log(`   Prediction channel   : ${predictionChannelId}`);
   console.log(`   Rift banner channel  : ${riftBannerChannelId}`);
+  console.log(`   Status channel       : ${statusChannelId}`);
   console.log(`   Role picker channel  : ${ROLE_CHANNEL_ID}`);
   console.log(`   Alert role           : ${EGG_ROLE_ID ?? '(none)'}`);
+  console.log(`   Rift boss role       : ${RIFT_BOSS_ROLE_ID}`);
   console.log(`   Auto-role (members)  : ${AUTOROLE_ID}`);
   console.log(`   Egg database         : ${require('./utils/roblox').eggLookup.size} eggs loaded`);
 
@@ -989,6 +1258,14 @@ client.once('ready', () => {
 
     // Initial Rift Banner display in dedicated channel (1550149335088496755)
     updateBannerChannel().catch((err) => console.error('[banner] Startup update error:', err.message));
+
+    // Initial live status display in dedicated channel (1550494247784947772)
+    updateStatusChannel().catch((err) => console.error('[status] Startup update error:', err.message));
+
+    // Periodic live status update tick (every 60s) to keep uptime, active users, and game stats fresh
+    setInterval(() => {
+      updateStatusChannel().catch(() => {});
+    }, 60_000);
 
     // Initial role picker setup / verification in role channel
     initRolePickerChannel().catch((err) => console.error('[roles] Startup update error:', err.message));

@@ -23,11 +23,15 @@ if (!USER_TOKEN || !SOURCE_CHANNEL_ID) {
   process.exit(1);
 }
 
-// Build list of all known eggs for fuzzy/keyword matching
+// Build list of all known eggs for fuzzy/keyword matching with pre-compiled regexes
 const allEggs = [];
 for (const [rarity, eggs] of Object.entries(eggDb)) {
   for (const egg of eggs) {
-    allEggs.push({ ...egg, rarity });
+    allEggs.push({
+      ...egg,
+      rarity,
+      regex: new RegExp(`\\b${egg.name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i'),
+    });
   }
 }
 
@@ -96,7 +100,7 @@ async function processMessage(message) {
       await axios.post(`${BOT_WEBHOOK_URL}/api/notify-boss`, {
         bossName: 'Rift Boss',
         biome: matchedBiome,
-      });
+      }, { timeout: 8000 });
       console.log(`[Relay] ✅ Rift Boss alert forwarded successfully!`);
     } catch (err) {
       console.error(`[Relay] ❌ Forward failed:`, err.response?.data || err.message);
@@ -106,8 +110,7 @@ async function processMessage(message) {
 
   // 2. Check for Known Eggs in text
   for (const egg of allEggs) {
-    const eggNameRegex = new RegExp(`\\b${egg.name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i');
-    if (eggNameRegex.test(fullText)) {
+    if (egg.regex.test(fullText)) {
       const dedupeKey = `egg_${egg.name}_${egg.biome}`;
       if (isDuplicate(dedupeKey)) return;
 
@@ -119,7 +122,7 @@ async function processMessage(message) {
           eggName: egg.name,
           rarity: egg.rarity,
           biome: egg.biome,
-        });
+        }, { timeout: 8000 });
         console.log(`[Relay] ✅ Forwarded in ${Date.now() - start}ms to your Discord server!`);
       } catch (err) {
         console.error(`[Relay] ❌ Forward failed:`, err.response?.data || err.message);

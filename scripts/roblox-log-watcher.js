@@ -79,7 +79,7 @@ async function forwardEggAlert(rarity, eggName, biome) {
       eggName: cleanEgg,
       rarity: rarity.trim(),
       biome: cleanBiome,
-    });
+    }, { timeout: 8000 });
     console.log(`[Watcher] ✅ Alert forwarded to Discord in ${Date.now() - start}ms!`);
   } catch (err) {
     console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
@@ -113,7 +113,7 @@ async function forwardBossAlert(bossName, biome) {
     await axios.post(`${BOT_URL}/api/notify-boss`, {
       bossName: cleanBoss,
       biome: cleanBiome,
-    });
+    }, { timeout: 8000 });
     console.log(`[Watcher] ✅ Boss alert forwarded to Discord in ${Date.now() - start}ms!`);
   } catch (err) {
     console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
@@ -131,12 +131,22 @@ async function forwardBannerAlert(bannerName) {
     const start = Date.now();
     await axios.post(`${BOT_URL}/api/notify-banner`, {
       bannerName: cleanBanner,
-    });
+    }, { timeout: 8000 });
     console.log(`[Watcher] ✅ Banner alert forwarded to Discord in ${Date.now() - start}ms!`);
   } catch (err) {
     console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
   }
 }
+
+const watcherClientId = 'watcher_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+
+// Heartbeat every 30s while watcher is actively running
+setInterval(() => {
+  axios.post(`${BOT_URL}/api/scanner-heartbeat`, {
+    clientId: watcherClientId,
+    version: 'watcher-1.0'
+  }, { timeout: 5000 }).catch(() => {});
+}, 30_000);
 
 async function forwardReadyAlert() {
   const dedupeKey = 'ready_alert';
@@ -146,7 +156,10 @@ async function forwardReadyAlert() {
   console.log('[Watcher] 🚀 Scanner ready! Forwarding...');
   try {
     const start = Date.now();
-    await axios.post(`${BOT_URL}/api/notify-ready`, {});
+    await axios.post(`${BOT_URL}/api/notify-ready`, {
+      clientId: watcherClientId,
+      version: 'watcher-1.0'
+    }, { timeout: 8000 });
     console.log(`[Watcher] ✅ Ready alert forwarded to Discord in ${Date.now() - start}ms!`);
   } catch (err) {
     console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
@@ -161,7 +174,9 @@ async function forwardOfflineAlert() {
   console.log('[Watcher] 🔌 Scanner went offline! Forwarding...');
   try {
     const start = Date.now();
-    await axios.post(`${BOT_URL}/api/notify-offline`, {});
+    await axios.post(`${BOT_URL}/api/notify-offline`, {
+      clientId: watcherClientId
+    }, { timeout: 8000 });
     console.log(`[Watcher] ✅ Offline alert forwarded to Discord in ${Date.now() - start}ms!`);
   } catch (err) {
     console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
@@ -234,24 +249,31 @@ function processLine(line) {
 let currentFile = null;
 let currentFileSize = 0;
 let lineBuffer = '';
+let lastDirScanTime = 0;
+const DIR_SCAN_INTERVAL_MS = 5000; // Check for newly launched game sessions every 5s instead of every 250ms
 
 function tailFile() {
-  const latest = getLatestLogFile();
-  if (!latest) {
-    setTimeout(tailFile, 2000);
-    return;
+  const now = Date.now();
+
+  // Scan logs folder on startup or periodically every 5 seconds for session switches
+  if (!currentFile || (now - lastDirScanTime >= DIR_SCAN_INTERVAL_MS)) {
+    lastDirScanTime = now;
+    const latest = getLatestLogFile();
+    if (latest && (!currentFile || currentFile.path !== latest.path)) {
+      currentFile = latest;
+      // Start at end of existing file to only catch new spawns
+      try {
+        currentFileSize = fs.statSync(latest.path).size;
+        console.log(`[Watcher] 📄 Attached to active log: ${latest.name}`);
+      } catch {
+        currentFileSize = 0;
+      }
+    }
   }
 
-  // If player launched a new Roblox session, switch files
-  if (!currentFile || currentFile.path !== latest.path) {
-    currentFile = latest;
-    // Start at end of existing file to only catch new spawns
-    try {
-      currentFileSize = fs.statSync(latest.path).size;
-      console.log(`[Watcher] 📄 Attached to active log: ${latest.name}`);
-    } catch {
-      currentFileSize = 0;
-    }
+  if (!currentFile) {
+    setTimeout(tailFile, 2000);
+    return;
   }
 
   try {

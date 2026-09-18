@@ -147,6 +147,89 @@ function buildStatusEmbed(gameData, botStartTime) {
 }
 
 /**
+ * Build a live status embed for dedicated status channel (1550494247784947772).
+ * Shows active script users, when the bot was updated, uptime, and game stats.
+ */
+function buildLiveStatusEmbed({
+  activeUsers = 0,
+  botStartTime = Date.now(),
+  botUpdatedUnix = null,
+  commitHash = null,
+  gameData = null,
+  ping = null,
+  currentBanner = null,
+} = {}) {
+  const uptimeSeconds = Math.floor((Date.now() - botStartTime) / 1000);
+  const days    = Math.floor(uptimeSeconds / 86400);
+  const hours   = Math.floor((uptimeSeconds % 86400) / 3600);
+  const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+  const seconds = uptimeSeconds % 60;
+  const uptimeParts = [];
+  if (days > 0) uptimeParts.push(`${days}d`);
+  if (hours > 0 || days > 0) uptimeParts.push(`${hours}h`);
+  uptimeParts.push(`${minutes}m ${seconds}s`);
+  const uptimeStr = uptimeParts.join(' ');
+
+  const gameUpdatedUnix = gameData?.updated
+    ? Math.floor(new Date(gameData.updated).getTime() / 1000)
+    : null;
+
+  const userStatusText = activeUsers > 0
+    ? `**\`${activeUsers}\` Active User${activeUsers === 1 ? '' : 's'}** 🟢\n*Scanning in-game now*`
+    : `**\`0\` Users** ⚪\n*Standby / Waiting for scanners*`;
+
+  const botUpdateText = botUpdatedUnix
+    ? `<t:${botUpdatedUnix}:F>\n(<t:${botUpdatedUnix}:R>)${commitHash ? ` • \`${commitHash}\`` : ''}`
+    : '*Unknown*';
+
+  const embed = new EmbedBuilder()
+    .setTitle('🟢  Steal An Egg — Live Bot & Scanner Status')
+    .setColor(activeUsers > 0 ? 0x57F287 : 0x5865F2)
+    .setDescription(
+      'Real-time status overview for the Steal An Egg Discord Notifier and in-game scanner network.\n' +
+      'Updates continuously in place.'
+    )
+    .addFields(
+      {
+        name: '👥 Active Script Users',
+        value: userStatusText,
+        inline: true,
+      },
+      {
+        name: '🕐 Bot Last Updated',
+        value: botUpdateText,
+        inline: true,
+      },
+      {
+        name: '🤖 Bot Uptime',
+        value: `${uptimeStr}\n*(Since <t:${Math.floor(botStartTime / 1000)}:R>)*`,
+        inline: true,
+      },
+      {
+        name: '🎮 Roblox Game Status',
+        value: gameData
+          ? `Playing: **\`${gameData.playing?.toLocaleString() ?? '—'}\`**\nVisits: **\`${gameData.visits?.toLocaleString() ?? '—'}\`**`
+          : '*Roblox data unavailable*',
+        inline: true,
+      },
+      {
+        name: '🎯 Monitored Place',
+        value: `[\`${PLACE_ID}\`](https://www.roblox.com/games/${PLACE_ID})\nUpdated: ${gameUpdatedUnix ? `<t:${gameUpdatedUnix}:R>` : '—'}`,
+        inline: true,
+      },
+      {
+        name: '⚡ System & Banner',
+        value: `Latency: **\`${ping != null ? `${ping}ms` : '—'}\`**\nBanner: **${currentBanner || 'Riftborn'}**`,
+        inline: true,
+      }
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Auto-refreshes every 60s' })
+    .setTimestamp();
+
+  return embed;
+}
+
+/**
  * Build a scheduled-event countdown embed.
  */
 function buildEventEmbed({ title, description, eventUnix, color }) {
@@ -302,72 +385,44 @@ function buildScannerOfflineEmbed({ jobId }) {
  */
 function buildPredictionEmbed(data) {
   const {
-    totalLogged,
     lastSpawn,
     nextSpawnUnix,
-    windowStartUnix,
-    windowEndUnix,
-    marginSeconds,
-    timingConfidencePct,
-    nextSpawnEtaSeconds,
     averageIntervalSeconds,
     rarityOdds,
-    pity,
     topBiomes,
     topEggs,
     topPets,
     top3CombinedProbability,
-    top5CombinedProbability,
   } = data;
 
-  const predictedClockTime = `<t:${nextSpawnUnix}:t> (<t:${nextSpawnUnix}:R>)`;
-  const windowTime = (windowStartUnix && windowEndUnix)
-    ? `**<t:${windowStartUnix}:t> – <t:${windowEndUnix}:t>**\n*(±${marginSeconds}s • **${timingConfidencePct || 90}% Confidence**)*`
-    : predictedClockTime;
+  const predictedTime = `<t:${nextSpawnUnix}:R> (<t:${nextSpawnUnix}:t>)`;
+  const top3Tag = top3CombinedProbability ? ` • **Top 3:** \`${top3CombinedProbability}%\`` : '';
+  const description = `⏳ **Next Spawn:** ${predictedTime} • **Pace:** \`~${Math.round(averageIntervalSeconds / 60)}m\`${top3Tag}`;
 
   const eggsToDisplay = (topEggs && topEggs.length > 0) ? topEggs : (topPets || []);
-
-  const eggLines = eggsToDisplay.slice(0, 10).map((p, idx) => {
+  const eggLines = eggsToDisplay.slice(0, 5).map((p, idx) => {
     const icon = RARITY_EMOJI[p.rarity.toLowerCase()] || '🥚';
-    const etaText = p.etaFormatted
-      ? `• ⏱️ in **${p.etaFormatted}** (<t:${p.etaUnix}:R>)`
-      : '';
     const displayName = p.eggName || (p.name.endsWith('Egg') ? p.name : `${p.name} Egg`);
     const medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `**${idx + 1}.**`));
-    return `${medal} ${icon} **${displayName}** (${p.biome}) — **${p.probability}%** ${etaText}`;
-  }).join('\n');
-
-  const rarityLine = `👑 **Divine:** \`${rarityOdds.Divine}%\` | 💎 **Eternal:** \`${rarityOdds.Eternal}%\` | 🔮 **Secret:** \`${rarityOdds.Secret}%\``;
-  const biomeLine = topBiomes.map((b) => {
-    const countText = b.spawnCount !== undefined ? ` (${b.spawnCount}x)` : '';
-    const markovTag = b.markovProb !== undefined ? ` • Next Markov: \`${b.markovProb}%\`` : '';
-    return `• **${b.biome}:** \`${b.probability}%\`${countText}${markovTag}`;
+    return `${medal} ${icon} **${displayName}** (${p.biome}) — **${p.probability}%**`;
   }).join('\n');
 
   const lastSpawnDesc = lastSpawn
     ? `**${lastSpawn.eggName}** (\`${lastSpawn.rarity}\` in **${lastSpawn.biome}**) • <t:${Math.floor(lastSpawn.timestamp / 1000)}:R>`
     : 'None recorded yet';
 
-  const top3Banner = top3CombinedProbability
-    ? `🎯 **Top 3 Combined Probability:** \`${top3CombinedProbability}%\` | **Top 5:** \`${top5CombinedProbability}%\`\n`
-    : '';
+  const rarityLine = `👑 **Divine:** \`${rarityOdds.Divine}%\`  •  💎 **Eternal:** \`${rarityOdds.Eternal}%\`  •  🔮 **Secret:** \`${rarityOdds.Secret}%\``;
+  const biomeLine = (topBiomes || []).slice(0, 4).map((b) => `• **${b.biome}:** \`${b.probability}%\``).join('  ');
 
   const embed = new EmbedBuilder()
     .setTitle('🔮  Global Egg Spawn Predictor')
     .setColor(0x9B59B6)
-    .setDescription(
-      `AI-powered global spawn forecaster trained on **${totalLogged} logged spawns**.\n` +
-      `Estimates which egg will spawn next using Markov transitions, 90% confidence windows & Bayesian pity cycles.\n\n` +
-      top3Banner
-    )
+    .setDescription(description)
     .addFields(
-      { name: '⏰ 90% Confidence Window', value: windowTime, inline: true },
-      { name: '⏱️ Expected Time', value: predictedClockTime, inline: true },
-      { name: '⚡ Spawn Pace', value: `\`~${Math.round(averageIntervalSeconds / 60)}m\` (\`${averageIntervalSeconds}s\`)`, inline: true },
-      { name: '📜 Last Global Spawn', value: lastSpawnDesc, inline: false },
-      { name: `🎯 Top Candidates (Top 3 = ${top3CombinedProbability || 0}% Combined)`, value: eggLines || 'No eggs available', inline: false },
-      { name: '📊 Rarity Likelihood (Empirical Bayesian)', value: `${rarityLine}\n*Pity Dry-Streaks:* Divine: \`${pity.divineDryStreak}\` spawns | Eternal: \`${pity.eternalDryStreak}\` spawns`, inline: false },
-      { name: '🗺️ Biome Activity & Markov Forecast', value: biomeLine || 'Unknown', inline: false },
+      { name: '📜 Last Spawn', value: lastSpawnDesc, inline: false },
+      { name: '🎯 Top Candidates', value: eggLines || 'No eggs available', inline: false },
+      { name: '📊 Rarity Odds', value: rarityLine, inline: false },
+      { name: '🗺️ Active Biomes', value: biomeLine || 'Unknown', inline: false },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Global AI Predictor' })
     .setTimestamp();
@@ -378,13 +433,13 @@ function buildPredictionEmbed(data) {
 /**
  * Build the "Pick a Role" selection embed for the role channel.
  */
-function buildRolePickerEmbed({ secretRoleId, eternalRoleId, divineRoleId, riftbornRoleId, riftbeastRoleId, shatteredRiftRoleId }) {
+function buildRolePickerEmbed({ secretRoleId, eternalRoleId, divineRoleId, riftbornRoleId, riftbeastRoleId, shatteredRiftRoleId, riftBossRoleId }) {
   return new EmbedBuilder()
     .setTitle('🎭  Notification Roles — Pick Your Roles')
     .setColor(0x5865F2)
     .setDescription(
       'Welcome to **Steal An Egg Notifier**!\n\n' +
-      'Select which egg tiers and rift banners you want to receive alerts and pings for. You can pick any combination of roles:\n\n' +
+      'Select which egg tiers, rift banners, and boss fights you want to receive alerts and pings for. You can pick any combination of roles:\n\n' +
       '**🥚 Egg Rarity Alerts:**\n' +
       `🔮 • <@&${secretRoleId}> — Alerts for **Secret** egg spawns\n` +
       `💎 • <@&${eternalRoleId}> — Alerts for **Eternal** egg spawns\n` +
@@ -393,6 +448,8 @@ function buildRolePickerEmbed({ secretRoleId, eternalRoleId, divineRoleId, riftb
       `🌌 • <@&${riftbornRoleId}> — Alerts for **Riftborn** banner rotation\n` +
       `🐺 • <@&${riftbeastRoleId}> — Alerts for **Riftbeast** banner rotation\n` +
       `⚡ • <@&${shatteredRiftRoleId}> — Alerts for **Shattered Rift** banner rotation\n\n` +
+      '**⚔️ Rift Event Alerts:**\n' +
+      `🌀 • <@&${riftBossRoleId}> — Alerts for **Rift Boss** spawns\n\n` +
       '*React with the emojis below or click the buttons to toggle roles on/off!*'
     )
     .setFooter({ text: 'Steal An Egg Notifier • Role Selection' })
@@ -407,6 +464,7 @@ module.exports = {
   buildUpdateEmbed,
   buildEggLookupEmbed,
   buildStatusEmbed,
+  buildLiveStatusEmbed,
   buildEventEmbed,
   buildRiftBossEmbed,
   buildBannerEmbed,

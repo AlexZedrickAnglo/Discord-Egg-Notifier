@@ -49,6 +49,15 @@ end
 -- Public Railway URL:
 local BOT_URL = "https://discord-egg-notifier-production.up.railway.app"
 
+-- Unique anonymous session identifier for active user tracking
+local clientId = nil
+pcall(function()
+    clientId = HttpService:GenerateGUID(false)
+end)
+if not clientId or #clientId == 0 then
+    clientId = string.format("client_%d_%d", os.time(), math.random(100000, 999999))
+end
+
 -- State tracking
 local lastAlerts = {}
 local lastBannerState = nil
@@ -267,6 +276,7 @@ local function sendAlert(endpoint, payload, dedupeDuration)
     lastAlerts[dedupeKey] = now
 
     payload.jobId = game.JobId
+    payload.clientId = clientId
     local url = BOT_URL .. endpoint
     local success, res = httpRequest(url, payload)
 
@@ -454,12 +464,14 @@ local function scanRiftBannerAndPets()
         end
     end
 
-    -- 3. Only inspect workspace models that actually contain 3D GUI components (BillboardGui / SurfaceGui)
-    for _, child in ipairs(workspace:GetChildren()) do
-        local cName = child.Name:lower()
-        if cName:find("rift", 1, true) or cName:find("machine", 1, true) or cName:find("lobby", 1, true) or cName:find("altar", 1, true) then
-            if child:FindFirstChildWhichIsA("BillboardGui", true) or child:FindFirstChildWhichIsA("SurfaceGui", true) then
-                inspectContainer(child)
+    -- 3. Only inspect workspace models if banner was not found in 2D GUI
+    if not bannerFromNow and not bannerFromTitle then
+        for _, child in ipairs(workspace:GetChildren()) do
+            local cName = child.Name:lower()
+            if cName:find("rift", 1, true) or cName:find("machine", 1, true) or cName:find("lobby", 1, true) or cName:find("altar", 1, true) then
+                if child:FindFirstChildWhichIsA("BillboardGui", true) or child:FindFirstChildWhichIsA("SurfaceGui", true) then
+                    inspectContainer(child)
+                end
             end
         end
     end
@@ -818,11 +830,23 @@ end)
 -- Initial scan complete: enable live alerts for newly spawned events
 isInitializing = false
 
--- ── 6. Periodic Rift Banner Scanner & Cache Pruner (every 30 seconds) 
+-- Helper: lightweight heartbeat for active user tracking (runs every 30s)
+local function sendHeartbeat()
+    pcall(function()
+        httpRequest(BOT_URL .. "/api/scanner-heartbeat", {
+            clientId = clientId,
+            jobId = game.JobId,
+            version = "3.5"
+        })
+    end)
+end
+
+-- ── 6. Periodic Rift Banner Scanner, Cache Pruner & Heartbeat (every 30 seconds) 
 local loopThread = task.spawn(function()
     while task.wait(30) do
         pcall(checkAndNotifyBanner)
         pcall(pruneCaches)
+        pcall(sendHeartbeat)
     end
 end)
 table.insert(activeThreads, loopThread)
@@ -833,14 +857,18 @@ task.defer(checkAndNotifyBanner)
 print("[EGG_ALERT] READY")
 
 task.spawn(function()
-    local readyOk = sendAlert("/api/notify-ready", {}, 5)
+    local readyOk = sendAlert("/api/notify-ready", {
+        clientId = clientId,
+        version = "3.5"
+    }, 5)
 
     -- If /api/notify-ready fails (e.g. Railway pending rebuild), fallback to /api/notify-egg
     if not readyOk then
         sendAlert("/api/notify-egg", {
             eggName = "Scanner Connected",
             rarity  = "System",
-            biome   = "Online"
+            biome   = "Online",
+            clientId = clientId
         }, 5)
     end
     print("[Notifier] 📡 Server status: " .. (readyOk and "Connected ✅" or "Fallback / Pending ⚠️"))
@@ -864,12 +892,15 @@ local function handleOffline()
 
     -- Synchronous alert dispatch so network packet is sent before thread tears down
     pcall(function()
-        local offlineOk = sendAlert("/api/notify-offline", {}, 5)
+        local offlineOk = sendAlert("/api/notify-offline", {
+            clientId = clientId
+        }, 5)
         if not offlineOk then
             sendAlert("/api/notify-egg", {
                 eggName = "Scanner Disconnected",
                 rarity  = "System",
-                biome   = "Offline"
+                biome   = "Offline",
+                clientId = clientId
             }, 5)
         end
     end)
