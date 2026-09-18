@@ -1141,13 +1141,32 @@ app.post('/api/notify-egg', async (req, res) => {
     return res.status(400).json({ error: 'Missing required field: eggName' });
   }
 
-  // Auto-match against egg database for enrichment
-  const dbMatch = findEgg(eggName);
+  const rawEggName = String(eggName).trim();
+  const lowerName = rawEggName.toLowerCase();
+  const lowerRarity = String(rarity || '').toLowerCase().trim();
+
+  // Guard against system, scanner, or banner events hitting this endpoint
+  const isSystemAlert =
+    lowerRarity === 'system' ||
+    lowerRarity === 'rift' ||
+    lowerName.includes('scanner') ||
+    lowerName.startsWith('banner:') ||
+    lowerName === 'ready' ||
+    lowerName === 'offline';
+
+  if (isSystemAlert) {
+    console.log(`[webhook/egg] ℹ️ System/scanner alert acknowledged on /api/notify-egg: "${rawEggName}"`);
+    return res.status(200).json({ ok: true, message: 'System event acknowledged.' });
+  }
+
+  // Auto-match against egg database for canonical enrichment
+  const dbMatch = findEgg(rawEggName);
+  const canonicalName = dbMatch?.name || rawEggName.replace(/\s+egg$/i, '').trim();
   const finalRarity = rarity  || dbMatch?.rarity || 'Unknown';
   const finalBiome  = biome   || dbMatch?.biome  || 'Unknown';
 
-  // Server-side egg deduplication (15s lockout)
-  const dedupeKey = `${(eggName || '').toLowerCase().trim()}_${(finalBiome || '').toLowerCase().trim()}`;
+  // Server-side egg deduplication (15s lockout) using canonical egg name
+  const dedupeKey = `${canonicalName.toLowerCase()}_${(finalBiome || '').toLowerCase().trim()}`;
   const now = Date.now();
 
   // Clean stale dedupe entries to prevent memory accumulation over time
@@ -1160,14 +1179,14 @@ app.post('/api/notify-egg', async (req, res) => {
   }
 
   if (recentEggAlerts.has(dedupeKey) && (now - recentEggAlerts.get(dedupeKey) < EGG_DEDUPE_MS)) {
-    console.log(`[webhook/egg] ⏳ Duplicate egg alert suppressed: "${eggName}" in "${finalBiome}"`);
+    console.log(`[webhook/egg] ⏳ Duplicate egg alert suppressed: "${canonicalName}" in "${finalBiome}"`);
     return res.status(200).json({ ok: true, suppressed: true, message: 'Duplicate egg alert suppressed.' });
   }
   recentEggAlerts.set(dedupeKey, now);
 
-  // Feed into global AI predictor
+  // Feed canonical egg into global AI predictor
   predictor.recordSpawn({
-    eggName,
+    eggName: canonicalName,
     rarity: finalRarity,
     biome: finalBiome,
     timestamp: now,
@@ -1184,8 +1203,10 @@ app.post('/api/notify-egg', async (req, res) => {
       return res.status(503).json({ error: 'Notification channel not available.' });
     }
 
+    const displayEggName = canonicalName.endsWith('Egg') ? canonicalName : `${canonicalName} Egg`;
+
     const embed = buildEggSpawnEmbed({
-      eggName,
+      eggName: displayEggName,
       rarity: finalRarity,
       biome:  finalBiome,
       jobId,
@@ -1198,12 +1219,12 @@ app.post('/api/notify-egg', async (req, res) => {
 
     // Mention the specific egg rarity role instead of generic role
     let targetRoleId = null;
-    const lowerRarity = (finalRarity || '').toLowerCase();
-    if (lowerRarity === 'divine') {
+    const lowerFinalRarity = (finalRarity || '').toLowerCase();
+    if (lowerFinalRarity === 'divine') {
       targetRoleId = DIVINE_ROLE_ID;
-    } else if (lowerRarity === 'eternal') {
+    } else if (lowerFinalRarity === 'eternal') {
       targetRoleId = ETERNAL_ROLE_ID;
-    } else if (lowerRarity === 'secret') {
+    } else if (lowerFinalRarity === 'secret') {
       targetRoleId = SECRET_ROLE_ID;
     } else {
       targetRoleId = EGG_ROLE_ID;
@@ -1213,7 +1234,7 @@ app.post('/api/notify-egg', async (req, res) => {
     const bannerBadge = bannerName
       ? (requiredForPet ? `⭐ **[SACRIFICE EGG: ${bannerName}]** ` : `⭐ **[BANNER EGG: ${bannerName}]** `)
       : '';
-    const header   = `${rolePing} ${bannerBadge}🚨 **${String(finalRarity).toUpperCase()} EGG:** **${eggName}** in **${finalBiome}**! • Spawned <t:${Math.floor(now / 1000)}:R>`;
+    const header   = `${rolePing} ${bannerBadge}🚨 **${String(finalRarity).toUpperCase()} EGG:** **${displayEggName}** in **${finalBiome}**! • Spawned <t:${Math.floor(now / 1000)}:R>`;
 
     await channel.send({ content: header, embeds: [embed] });
 

@@ -55,14 +55,26 @@ function loadEggDb() {
     for (const p of pets) knownNames.add(p.name.toLowerCase().trim());
   }
 
+  const SYSTEM_NAMES = new Set(['scanner connected', 'scanner disconnected', 'ready', 'offline', 'system']);
   for (const h of history) {
     const rawName = (h.eggName || '').replace(/\s+Egg$/i, '').trim();
-    if (rawName && !knownNames.has(rawName.toLowerCase())) {
-      knownNames.add(rawName.toLowerCase());
-      const r = normalizeRarity(h.rarity);
-      if (!db[r]) db[r] = [];
-      db[r].push({ name: rawName, biome: h.biome || 'Unknown' });
+    const lowerName = rawName.toLowerCase();
+    const lowerRarity = (h.rarity || '').toLowerCase();
+    if (
+      !rawName ||
+      knownNames.has(lowerName) ||
+      SYSTEM_NAMES.has(lowerName) ||
+      lowerName.includes('scanner') ||
+      lowerName.startsWith('banner:') ||
+      lowerRarity === 'system' ||
+      lowerRarity === 'rift'
+    ) {
+      continue;
     }
+    knownNames.add(lowerName);
+    const r = normalizeRarity(h.rarity);
+    if (!db[r]) db[r] = [];
+    db[r].push({ name: rawName, biome: h.biome || 'Unknown' });
   }
 
   cachedEggDb = db;
@@ -111,17 +123,34 @@ function saveHistory(history) {
     pendingHistoryData = null;
 
     const tmpPath = `${HISTORY_PATH}.tmp`;
-    fs.writeFile(tmpPath, JSON.stringify(dataToWrite, null, 2), 'utf8', (err) => {
+    const jsonStr = JSON.stringify(dataToWrite, null, 2);
+
+    fs.writeFile(tmpPath, jsonStr, 'utf8', (err) => {
       if (err) {
-        console.error('[predictor] Failed to write temp spawn-history file:', err.message);
-        isWritingHistory = false;
+        // Direct write fallback
+        fs.writeFile(HISTORY_PATH, jsonStr, 'utf8', (fallbackErr) => {
+          if (fallbackErr) {
+            console.error('[predictor] ❌ Failed to write spawn-history.json:', fallbackErr.message);
+          }
+          if (pendingHistoryData) setImmediate(flush);
+          else isWritingHistory = false;
+        });
         return;
       }
 
       fs.rename(tmpPath, HISTORY_PATH, (renameErr) => {
         if (renameErr) {
-          console.error('[predictor] Failed to atomically replace spawn-history.json:', renameErr.message);
+          // Direct write fallback if atomic rename fails (e.g. Windows file lock)
+          fs.writeFile(HISTORY_PATH, jsonStr, 'utf8', (fallbackErr) => {
+            if (fallbackErr) {
+              console.error('[predictor] ❌ Failed direct write fallback for spawn-history.json:', fallbackErr.message);
+            }
+            if (pendingHistoryData) setImmediate(flush);
+            else isWritingHistory = false;
+          });
+          return;
         }
+
         if (pendingHistoryData) {
           setImmediate(flush);
         } else {
@@ -169,27 +198,52 @@ function normalizeBiome(raw) {
  * Record a newly spawned egg into global learning history
  */
 function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), isBannerEgg, bannerName }) {
+  if (!eggName) return;
+
+  const rawName = String(eggName).replace(/\s+Egg$/i, '').trim();
+  const lowerName = rawName.toLowerCase();
+  const lowerRarity = String(rarity || '').toLowerCase().trim();
+
+  // Guard against system, scanner, or banner events
+  if (
+    lowerRarity === 'system' ||
+    lowerRarity === 'rift' ||
+    lowerName.includes('scanner') ||
+    lowerName.startsWith('banner:') ||
+    lowerName === 'ready' ||
+    lowerName === 'offline'
+  ) {
+    return;
+  }
+
   cachedEggDb = null; // Invalidate to ensure any new update eggs are discovered
   cachedPredictionKey = null;
   cachedPredictionBase = null;
+
   const history = loadHistory();
   const cleanBiome = normalizeBiome(biome);
   const cleanRarity = normalizeRarity(rarity);
 
-  // Deduplicate against the very latest recorded spawn if within 30s
+  // Deduplicate against recent recorded spawns within 45 seconds
   if (history.length > 0) {
-    const latest = history[history.length - 1];
-    if (
-      latest.eggName.toLowerCase() === eggName.toLowerCase() &&
-      latest.biome.toLowerCase() === cleanBiome.toLowerCase() &&
-      timestamp - latest.timestamp < 30000
-    ) {
-      return; // Already recorded
+    const recentSpawns = history.slice(-5);
+    const isDup = recentSpawns.some((h) => {
+      const hName = (h.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
+      const hBiome = normalizeBiome(h.biome).toLowerCase();
+      return (
+        hName === lowerName &&
+        (hBiome === cleanBiome.toLowerCase() || cleanBiome === 'Unknown' || hBiome === 'Unknown') &&
+        Math.abs(timestamp - h.timestamp) < 45000
+      );
+    });
+    if (isDup) {
+      console.log(`[predictor] ⏳ Duplicate spawn suppressed in predictor: "${rawName}" in "${cleanBiome}"`);
+      return;
     }
   }
 
   history.push({
-    eggName,
+    eggName: rawName,
     rarity: cleanRarity,
     biome: cleanBiome,
     timestamp,
@@ -198,7 +252,7 @@ function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), isBannerE
   });
 
   saveHistory(history);
-  console.log(`[predictor] 🧠 Logged spawn: ${eggName} (${cleanRarity}) in ${cleanBiome}. Total history: ${history.length}`);
+  console.log(`[predictor] 🧠 Logged spawn: ${rawName} (${cleanRarity}) in ${cleanBiome}. Total history: ${history.length}`);
 }
 
 let cachedPredictionKey = null;
@@ -226,9 +280,26 @@ function getPrediction(activeBanner = null) {
 
   if (cachedPredictionKey === currentKey && cachedPredictionBase) {
     const now = Date.now();
-    const secondsRemaining = Math.max(0, Math.round((cachedPredictionBase.nextSpawnTimestamp - now) / 1000));
+    let nextTs = cachedPredictionBase.nextSpawnTimestamp;
+    const avgSec = cachedPredictionBase.avgSec || 360;
+    const avgMs = avgSec * 1000;
+
+    // Roll forward target timestamp if elapsed while awaiting next spawn
+    if (nextTs <= now) {
+      const elapsed = now - nextTs;
+      const cycles = Math.floor(elapsed / avgMs) + 1;
+      nextTs = nextTs + cycles * avgMs;
+      cachedPredictionBase.nextSpawnTimestamp = nextTs;
+    }
+
+    const secondsRemaining = Math.max(15, Math.round((nextTs - now) / 1000));
+    const nextSpawnUnix = Math.floor(nextTs / 1000);
+    const marginMs = (cachedPredictionBase.result?.marginSeconds || 45) * 1000;
+    const windowStartUnix = Math.floor((nextTs - marginMs) / 1000);
+    const windowEndUnix = Math.floor((nextTs + marginMs) / 1000);
+
     const rankedEggs = cachedPredictionBase.sortedEggs.map((e, idx) => {
-      const etaSecs = Math.max(10, Math.round(secondsRemaining + (idx * cachedPredictionBase.avgSec * 0.85)));
+      const etaSecs = Math.round(secondsRemaining + (idx * avgSec));
       const mins = Math.floor(etaSecs / 60);
       const secs = etaSecs % 60;
       const etaFormatted = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
@@ -243,6 +314,9 @@ function getPrediction(activeBanner = null) {
 
     return {
       ...cachedPredictionBase.result,
+      nextSpawnUnix,
+      windowStartUnix,
+      windowEndUnix,
       nextSpawnEtaSeconds: secondsRemaining,
       topEggs: rankedEggs.slice(0, 10),
       topPets: rankedEggs.slice(0, 10),
@@ -288,10 +362,29 @@ function getPrediction(activeBanner = null) {
     stdDevMs = Math.sqrt(variance);
   }
 
-  const lastSpawnTime = lastSpawn ? lastSpawn.timestamp : (Date.now() - medianIntervalMs);
-  const nextSpawnTimestamp = lastSpawnTime + medianIntervalMs;
+  const now = Date.now();
+  const lastSpawnTime = lastSpawn ? lastSpawn.timestamp : (now - medianIntervalMs);
+  let nextSpawnTimestamp = lastSpawnTime + medianIntervalMs;
+
+  if (nextSpawnTimestamp <= now) {
+    const elapsedSinceLast = now - lastSpawnTime;
+    if (elapsedSinceLast > 1500000) { // Gap > 25 mins (game server empty / inactive)
+      // Server is active now, egg spawn window is expected within half the standard interval
+      nextSpawnTimestamp = now + Math.round(medianIntervalMs * 0.5);
+    } else {
+      // Active ongoing game session, project forward through spawn cycles
+      const cyclesPassed = Math.floor(elapsedSinceLast / medianIntervalMs);
+      nextSpawnTimestamp = lastSpawnTime + (cyclesPassed + 1) * medianIntervalMs;
+    }
+  }
+
+  // Ensure nextSpawnTimestamp is at least 15s in the future so countdown is always forward-pointing
+  if (nextSpawnTimestamp <= now) {
+    nextSpawnTimestamp = now + 60000;
+  }
+
   const nextSpawnUnix = Math.floor(nextSpawnTimestamp / 1000);
-  const secondsRemaining = Math.max(0, Math.round((nextSpawnTimestamp - Date.now()) / 1000));
+  const secondsRemaining = Math.max(15, Math.round((nextSpawnTimestamp - now) / 1000));
 
   // 90% Confidence Interval (Z ≈ 1.645)
   const zScore = 1.645;
@@ -337,7 +430,10 @@ function getPrediction(activeBanner = null) {
   const biomeCounts = {};
 
   history.forEach((h) => {
-    const eggKey = (h.eggName || '').toLowerCase().trim();
+    const rawName = (h.eggName || '').replace(/\s+Egg$/i, '').trim();
+    const eggKey = rawName.toLowerCase();
+    if (!eggKey || eggKey.includes('scanner') || eggKey.startsWith('banner:')) return;
+
     eggCounts[eggKey] = (eggCounts[eggKey] || 0) + 1;
 
     const r = normalizeRarity(h.rarity);
@@ -348,7 +444,9 @@ function getPrediction(activeBanner = null) {
     }
 
     const b = normalizeBiome(h.biome);
-    biomeCounts[b] = (biomeCounts[b] || 0) + 1;
+    if (b !== 'Unknown') {
+      biomeCounts[b] = (biomeCounts[b] || 0) + 1;
+    }
   });
 
   // 3. Bayesian Smoothed Rarity Distribution with Pity
@@ -403,13 +501,13 @@ function getPrediction(activeBanner = null) {
 
   const foundPets = new Set();
   for (let i = historyLen - 1; i >= 0; i--) {
-    const hName = (history[i].eggName || '').toLowerCase().trim();
+    const rawH = (history[i].eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
     const streak = (historyLen - 1) - i;
     for (const pets of Object.values(eggDb)) {
       for (const pet of pets) {
         if (!foundPets.has(pet.name)) {
           const pName = pet.name.toLowerCase().trim();
-          if (hName === pName || hName.includes(pName) || pName.includes(hName)) {
+          if (rawH === pName || rawH.includes(pName) || pName.includes(rawH)) {
             petDryStreaks[pet.name] = streak;
             foundPets.add(pet.name);
           }
@@ -493,10 +591,9 @@ function getPrediction(activeBanner = null) {
 
   // Compute predicted ETA in xx:xx minutes based on rank and spawn pace
   const avgSec = Math.round(medianIntervalMs / 1000);
-  const now = Date.now();
 
   const rankedEggs = sortedEggs.map((e, idx) => {
-    const etaSecs = Math.max(10, Math.round(secondsRemaining + (idx * avgSec * 0.85)));
+    const etaSecs = Math.round(secondsRemaining + (idx * avgSec));
     const mins = Math.floor(etaSecs / 60);
     const secs = etaSecs % 60;
     const etaFormatted = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
