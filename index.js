@@ -166,7 +166,15 @@ async function updateBannerChannel({ bannerName, requiredPets, details, timeRema
   if (!riftBannerChannelId) return;
 
   const targetBanner = bannerName || currentActiveBanner || 'Riftborn';
+  const isNewBanner = Boolean(
+    bannerName &&
+    currentActiveBanner &&
+    currentActiveBanner.toLowerCase().trim() !== bannerName.toLowerCase().trim()
+  );
   currentActiveBanner = targetBanner;
+
+  const bannerRoleId = getRoleForBanner(targetBanner);
+  const rolePing = bannerRoleId ? `<@&${bannerRoleId}>` : '';
 
   try {
     const channel = await client.channels.fetch(riftBannerChannelId).catch(() => null);
@@ -201,14 +209,38 @@ async function updateBannerChannel({ bannerName, requiredPets, details, timeRema
       }
     }
 
-    if (targetMsg) {
-      await targetMsg.edit({ embeds: [embed] });
-      liveBannerMessageId = targetMsg.id;
-      console.log(`[banner] 🔄 Updated Rift Banner in channel <#${riftBannerChannelId}> (${targetMsg.id})`);
-    } else {
-      const sent = await channel.send({ embeds: [embed] });
+    if (isNewBanner) {
+      // A new banner dropped! Remove old message and post with role mention
+      if (targetMsg) {
+        await targetMsg.delete().catch(() => {});
+        targetMsg = null;
+      }
+      const header = rolePing
+        ? `${rolePing} 📜 **NEW RIFT BANNER DROPPED: ${targetBanner}!**`
+        : `📜 **NEW RIFT BANNER DROPPED: ${targetBanner}!**`;
+      const sent = await channel.send({ content: header, embeds: [embed] });
       liveBannerMessageId = sent.id;
-      console.log(`[banner] 🚀 Posted initial Rift Banner in channel <#${riftBannerChannelId}> (${sent.id})`);
+      console.log(`[banner] 🚀 Posted new Rift Banner with role ping in channel <#${riftBannerChannelId}> (${sent.id})`);
+
+      // Also announce in main notification channel if configured
+      if (notifyChannelId && notifyChannelId !== riftBannerChannelId) {
+        const mainChan = await client.channels.fetch(notifyChannelId).catch(() => null);
+        if (mainChan) {
+          await mainChan.send({ content: header, embeds: [embed] }).catch(() => {});
+        }
+      }
+    } else {
+      // Routine update: edit existing message in-place without repeated pings
+      if (targetMsg) {
+        await targetMsg.edit({ embeds: [embed] });
+        liveBannerMessageId = targetMsg.id;
+        console.log(`[banner] 🔄 Updated Rift Banner in channel <#${riftBannerChannelId}> (${targetMsg.id})`);
+      } else {
+        const header = rolePing ? `${rolePing} 📜 **ACTIVE RIFT BANNER: ${targetBanner}**` : '';
+        const sent = await channel.send({ content: header || undefined, embeds: [embed] });
+        liveBannerMessageId = sent.id;
+        console.log(`[banner] 🚀 Posted initial Rift Banner in channel <#${riftBannerChannelId}> (${sent.id})`);
+      }
     }
 
     saveBannerState({ messageId: liveBannerMessageId, bannerName: targetBanner });
@@ -224,22 +256,41 @@ function setNotifyChannel(id) {
 }
 
 // ── Role Picker & Auto-Role Configuration ─────────────────────
-const ROLE_CHANNEL_ID = process.env.ROLE_CHANNEL_ID || '1550142026941599744';
-const SECRET_ROLE_ID  = process.env.SECRET_ROLE_ID  || '1550146335045324960';
-const ETERNAL_ROLE_ID = process.env.ETERNAL_ROLE_ID || '1550146424027615272';
-const DIVINE_ROLE_ID  = process.env.DIVINE_ROLE_ID  || '1550146470752030760';
-const AUTOROLE_ID     = process.env.AUTOROLE_ID     || '1550146592676380794';
+const ROLE_CHANNEL_ID       = process.env.ROLE_CHANNEL_ID       || '1550142026941599744';
+const SECRET_ROLE_ID        = process.env.SECRET_ROLE_ID        || '1550146335045324960';
+const ETERNAL_ROLE_ID       = process.env.ETERNAL_ROLE_ID       || '1550146424027615272';
+const DIVINE_ROLE_ID        = process.env.DIVINE_ROLE_ID        || '1550146470752030760';
+const AUTOROLE_ID           = process.env.AUTOROLE_ID           || '1550146592676380794';
+
+const RIFTBORN_ROLE_ID       = process.env.RIFTBORN_ROLE_ID       || '1550479648549245018';
+const RIFTBEAST_ROLE_ID      = process.env.RIFTBEAST_ROLE_ID      || '1550479705675665478';
+const SHATTERED_RIFT_ROLE_ID = process.env.SHATTERED_RIFT_ROLE_ID || '1550479734134276217';
+
+function getRoleForBanner(bannerName) {
+  if (!bannerName) return null;
+  const lower = bannerName.toLowerCase().trim();
+  if (lower.includes('shattered')) return SHATTERED_RIFT_ROLE_ID;
+  if (lower.includes('beast')) return RIFTBEAST_ROLE_ID;
+  if (lower.includes('born')) return RIFTBORN_ROLE_ID;
+  return null;
+}
 
 const BUTTON_ROLE_MAP = {
-  role_secret:  SECRET_ROLE_ID,
-  role_eternal: ETERNAL_ROLE_ID,
-  role_divine:  DIVINE_ROLE_ID,
+  role_secret:         SECRET_ROLE_ID,
+  role_eternal:        ETERNAL_ROLE_ID,
+  role_divine:         DIVINE_ROLE_ID,
+  role_riftborn:       RIFTBORN_ROLE_ID,
+  role_riftbeast:      RIFTBEAST_ROLE_ID,
+  role_shattered_rift: SHATTERED_RIFT_ROLE_ID,
 };
 
 const EMOJI_ROLE_MAP = {
   '🔮': SECRET_ROLE_ID,
   '💎': ETERNAL_ROLE_ID,
   '👑': DIVINE_ROLE_ID,
+  '🌌': RIFTBORN_ROLE_ID,
+  '🐺': RIFTBEAST_ROLE_ID,
+  '⚡': SHATTERED_RIFT_ROLE_ID,
 };
 
 let liveRolePickerMessageId = null;
@@ -270,7 +321,7 @@ loadRolePickerState();
 
 /**
  * Initialize or refresh the "Pick a Role" selection message in channel 1550142026941599744.
- * Includes both interactive buttons and emoji reactions (🔮, 💎, 👑).
+ * Includes interactive buttons and emoji reactions for all 6 roles.
  */
 async function initRolePickerChannel() {
   if (!ROLE_CHANNEL_ID) return;
@@ -283,12 +334,15 @@ async function initRolePickerChannel() {
     }
 
     const embed = buildRolePickerEmbed({
-      secretRoleId:  SECRET_ROLE_ID,
-      eternalRoleId: ETERNAL_ROLE_ID,
-      divineRoleId:  DIVINE_ROLE_ID,
+      secretRoleId:        SECRET_ROLE_ID,
+      eternalRoleId:       ETERNAL_ROLE_ID,
+      divineRoleId:        DIVINE_ROLE_ID,
+      riftbornRoleId:      RIFTBORN_ROLE_ID,
+      riftbeastRoleId:     RIFTBEAST_ROLE_ID,
+      shatteredRiftRoleId: SHATTERED_RIFT_ROLE_ID,
     });
 
-    const row = new ActionRowBuilder().addComponents(
+    const row1 = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId('role_secret')
         .setLabel('Secret')
@@ -306,6 +360,24 @@ async function initRolePickerChannel() {
         .setStyle(ButtonStyle.Secondary),
     );
 
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('role_riftborn')
+        .setLabel('Riftborn')
+        .setEmoji('🌌')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('role_riftbeast')
+        .setLabel('Riftbeast')
+        .setEmoji('🐺')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('role_shattered_rift')
+        .setLabel('Shattered Rift')
+        .setEmoji('⚡')
+        .setStyle(ButtonStyle.Primary),
+    );
+
     let targetMsg = null;
     if (liveRolePickerMessageId) {
       targetMsg = await channel.messages.fetch(liveRolePickerMessageId).catch(() => null);
@@ -320,11 +392,11 @@ async function initRolePickerChannel() {
     }
 
     if (targetMsg) {
-      await targetMsg.edit({ embeds: [embed], components: [row] });
+      await targetMsg.edit({ embeds: [embed], components: [row1, row2] });
       liveRolePickerMessageId = targetMsg.id;
       console.log(`[roles] 🔄 Updated role picker message in <#${ROLE_CHANNEL_ID}> (${targetMsg.id})`);
     } else {
-      const sent = await channel.send({ embeds: [embed], components: [row] });
+      const sent = await channel.send({ embeds: [embed], components: [row1, row2] });
       targetMsg = sent;
       liveRolePickerMessageId = sent.id;
       console.log(`[roles] 🚀 Posted new role picker message in <#${ROLE_CHANNEL_ID}> (${sent.id})`);
@@ -332,11 +404,14 @@ async function initRolePickerChannel() {
 
     saveRolePickerState({ messageId: liveRolePickerMessageId });
 
-    // Ensure default reactions are present
+    // Ensure default reactions are present for all 6 roles
     try {
       await targetMsg.react('🔮');
       await targetMsg.react('💎');
       await targetMsg.react('👑');
+      await targetMsg.react('🌌');
+      await targetMsg.react('🐺');
+      await targetMsg.react('⚡');
     } catch (reactErr) {
       console.warn(`[roles] ⚠️ Could not pre-add reactions (check channel permissions): ${reactErr.message}`);
     }

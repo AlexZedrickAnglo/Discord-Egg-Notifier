@@ -33,13 +33,9 @@ function colorForRarity(rarity) {
 function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image, isBannerEgg, bannerName, requiredForPet, timestamp }) {
   const emoji   = RARITY_EMOJI[rarity?.toLowerCase()] ?? '🥚';
   const color   = (isBannerEgg || bannerName) ? 0x9B59B6 : colorForRarity(rarity);
-  const joinUrl = jobId
-    ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
-    : null;
 
   const titlePrefix = bannerName ? '⭐ BANNER EGG — ' : '';
   const spawnUnix = Math.floor((timestamp || Date.now()) / 1000);
-  const joinSection = joinUrl ? `\n\n🔗 **[Join Server](${joinUrl})**` : '';
 
   const embed = new EmbedBuilder()
     .setTitle(`${emoji}  ${titlePrefix}${(rarity ?? 'RARE').toUpperCase()} EGG SPAWNED — ${eggName}`)
@@ -47,8 +43,7 @@ function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image, isBannerEgg,
     .setDescription(
       `# 🕒 <t:${spawnUnix}:T>\n` +
       `### ⏳ Spawned <t:${spawnUnix}:R>\n\n` +
-      `A **${rarity ?? 'rare'}** egg has appeared in **${biome ?? 'the world'}**!` +
-      joinSection
+      `A **${rarity ?? 'rare'}** egg has appeared in **${biome ?? 'the world'}**!`
     )
     .addFields(
       { name: '🥚 Egg',        value: `**${eggName}**`,                    inline: true },
@@ -229,10 +224,6 @@ const BANNER_INFO = {
  */
 function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jobId }) {
   const name = bannerName || 'Riftborn';
-  const joinUrl = jobId
-    ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
-    : null;
-
   const info = BANNER_INFO[name];
 
   const embed = new EmbedBuilder()
@@ -240,8 +231,7 @@ function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jo
     .setColor(0x9B59B6) // Amethyst Purple
     .setDescription(
       `The Rift Machine banner is currently **${name}**!\n` +
-      `*This message automatically edits in-place when the active banner rotates.*\n` +
-      (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : '')
+      `*This message automatically edits in-place when the active banner rotates.*`
     )
     .addFields(
       { name: '🏷️ Active Banner',   value: `**${name}**`, inline: true },
@@ -274,16 +264,11 @@ function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jo
  * Build a Scanner Execution / Connection embed.
  */
 function buildScannerReadyEmbed({ jobId }) {
-  const joinUrl = jobId
-    ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
-    : null;
-
   return new EmbedBuilder()
     .setTitle('🚀  In-Game Scanner Connected!')
     .setColor(0x57F287) // Bright Green
     .setDescription(
-      `An in-game scanner was **executed successfully** and is actively monitoring for egg spawns, rift bosses & banner rotations!\n` +
-      (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : '')
+      'An in-game scanner was **executed successfully** and is actively monitoring for egg spawns, rift bosses & banner rotations!'
     )
     .addFields(
       { name: '📡 Status',    value: '🟢 Active & Listening',             inline: true },
@@ -393,16 +378,21 @@ function buildPredictionEmbed(data) {
 /**
  * Build the "Pick a Role" selection embed for the role channel.
  */
-function buildRolePickerEmbed({ secretRoleId, eternalRoleId, divineRoleId }) {
+function buildRolePickerEmbed({ secretRoleId, eternalRoleId, divineRoleId, riftbornRoleId, riftbeastRoleId, shatteredRiftRoleId }) {
   return new EmbedBuilder()
     .setTitle('🎭  Notification Roles — Pick Your Roles')
     .setColor(0x5865F2)
     .setDescription(
       'Welcome to **Steal An Egg Notifier**!\n\n' +
-      'Select which egg tiers you want to receive alerts and pings for. You can pick any combination of roles:\n\n' +
+      'Select which egg tiers and rift banners you want to receive alerts and pings for. You can pick any combination of roles:\n\n' +
+      '**🥚 Egg Rarity Alerts:**\n' +
       `🔮 • <@&${secretRoleId}> — Alerts for **Secret** egg spawns\n` +
       `💎 • <@&${eternalRoleId}> — Alerts for **Eternal** egg spawns\n` +
       `👑 • <@&${divineRoleId}> — Alerts for **Divine** egg spawns\n\n` +
+      '**📜 Rift Machine Banner Alerts:**\n' +
+      `🌌 • <@&${riftbornRoleId}> — Alerts for **Riftborn** banner rotation\n` +
+      `🐺 • <@&${riftbeastRoleId}> — Alerts for **Riftbeast** banner rotation\n` +
+      `⚡ • <@&${shatteredRiftRoleId}> — Alerts for **Shattered Rift** banner rotation\n\n` +
       '*React with the emojis below or click the buttons to toggle roles on/off!*'
     )
     .setFooter({ text: 'Steal An Egg Notifier • Role Selection' })
