@@ -57,13 +57,17 @@ for (const [rarity, eggs] of Object.entries(eggDb)) {
 function findEgg(query) {
   if (!query) return null;
   const q = query.toLowerCase().trim();
+  const cleanQ = q.replace(/\s+egg$/i, '').trim();
 
-  // Exact match first
+  // Exact match first (with or without 'egg' suffix)
+  if (eggLookup.has(cleanQ)) return eggLookup.get(cleanQ);
   if (eggLookup.has(q)) return eggLookup.get(q);
 
   // Partial / fuzzy match
   for (const [key, entry] of eggLookup) {
-    if (key.includes(q) || q.includes(key)) return entry;
+    if (key.includes(cleanQ) || cleanQ.includes(key) || key.includes(q) || q.includes(key)) {
+      return entry;
+    }
   }
   return null;
 }

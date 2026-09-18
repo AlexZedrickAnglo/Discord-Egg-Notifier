@@ -29,6 +29,11 @@ const recentAlerts = new Map();
 
 function isDuplicate(key) {
   const now = Date.now();
+  if (recentAlerts.size > 50) {
+    for (const [k, t] of recentAlerts.entries()) {
+      if (now - t > 60000) recentAlerts.delete(k);
+    }
+  }
   if (recentAlerts.has(key) && (now - recentAlerts.get(key) < 15000)) {
     return true;
   }
@@ -98,7 +103,6 @@ async function forwardBossAlert(bossName, biome) {
   lastBossForwardTime = now;
 
   const cleanBoss = (bossName || 'Rift Boss').trim();
-  const cleanBiome = (biome || 'Unknown').trim();
   const dedupeKey = `boss_${cleanBoss}_${cleanBiome}`;
 
   if (isDuplicate(dedupeKey)) return;
@@ -134,19 +138,31 @@ async function forwardBannerAlert(bannerName) {
   }
 }
 
-async function forwardReadyAlert(account) {
-  const cleanAccount = (account || 'Roblox Client').trim();
-  const dedupeKey = `ready_${cleanAccount}`;
+async function forwardReadyAlert() {
+  const dedupeKey = 'ready_alert';
 
   if (isDuplicate(dedupeKey)) return;
 
-  console.log(`[Watcher] 🚀 Scanner ready for account: ${cleanAccount}! Forwarding...`);
+  console.log('[Watcher] 🚀 Scanner ready! Forwarding...');
   try {
     const start = Date.now();
-    await axios.post(`${BOT_URL}/api/notify-ready`, {
-      account: cleanAccount,
-    });
+    await axios.post(`${BOT_URL}/api/notify-ready`, {});
     console.log(`[Watcher] ✅ Ready alert forwarded to Discord in ${Date.now() - start}ms!`);
+  } catch (err) {
+    console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
+  }
+}
+
+async function forwardOfflineAlert() {
+  const dedupeKey = 'offline_alert';
+
+  if (isDuplicate(dedupeKey)) return;
+
+  console.log('[Watcher] 🔌 Scanner went offline! Forwarding...');
+  try {
+    const start = Date.now();
+    await axios.post(`${BOT_URL}/api/notify-offline`, {});
+    console.log(`[Watcher] ✅ Offline alert forwarded to Discord in ${Date.now() - start}ms!`);
   } catch (err) {
     console.error(`[Watcher] ❌ Forward failed:`, err.response?.data || err.message);
   }
@@ -176,10 +192,17 @@ function processLine(line) {
     return;
   }
 
-  // Pattern 4: From our Dev Console script [EGG_ALERT] READY:account
-  const readyMatch = line.match(/\[EGG_ALERT\]\s+READY:([^\r\n]+)/i);
+  // Pattern 4: From our Dev Console script [EGG_ALERT] READY
+  const readyMatch = line.match(/\[EGG_ALERT\]\s+READY(?::[^\r\n]+)?/i);
   if (readyMatch) {
-    forwardReadyAlert(readyMatch[1]);
+    forwardReadyAlert();
+    return;
+  }
+
+  // Pattern 5: From our Dev Console script [EGG_ALERT] OFFLINE
+  const offlineMatch = line.match(/\[EGG_ALERT\]\s+OFFLINE/i);
+  if (offlineMatch) {
+    forwardOfflineAlert();
     return;
   }
 
@@ -237,8 +260,11 @@ function tailFile() {
       const bytesToRead = stats.size - currentFileSize;
       const buffer = Buffer.alloc(bytesToRead);
       const fd = fs.openSync(currentFile.path, 'r');
-      fs.readSync(fd, buffer, 0, bytesToRead, currentFileSize);
-      fs.closeSync(fd);
+      try {
+        fs.readSync(fd, buffer, 0, bytesToRead, currentFileSize);
+      } finally {
+        fs.closeSync(fd);
+      }
 
       currentFileSize = stats.size;
       lineBuffer += buffer.toString('utf8');

@@ -32,6 +32,7 @@ const {
   buildRiftBossEmbed,
   buildBannerEmbed,
   buildScannerReadyEmbed,
+  buildScannerOfflineEmbed,
   buildPredictionEmbed,
   buildRolePickerEmbed,
 } = require('./utils/notifier');
@@ -52,6 +53,7 @@ const recentEggAlerts   = new Map();
 const EGG_DEDUPE_MS     = 15_000;  // 15 seconds lockout
 
 let predictionChannelId     = process.env.PREDICTION_CHANNEL_ID || '1550126931100303480';
+let riftBossChannelId       = process.env.RIFT_BOSS_CHANNEL_ID || '1550467255710785727';
 let livePredictionMessageId = null;
 const PREDICTION_STATE_FILE = path.join(__dirname, 'data', 'prediction-state.json');
 
@@ -643,14 +645,20 @@ async function sendRiftBossAlert({ bossName, biome, health, timeLimit, image }) 
   lastBossAlertTime = now;
   lastBossAlertInfo = { boss, targetBiome, timestamp: now };
 
-  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
-  if (!channel) throw new Error('Notification channel not available.');
+  const targetChannelId = riftBossChannelId || notifyChannelId;
+  let channel = await client.channels.fetch(targetChannelId).catch(() => null);
+  if (!channel && targetChannelId !== notifyChannelId) {
+    console.warn(`[webhook/boss] Channel ${targetChannelId} not accessible, falling back to notification channel ${notifyChannelId}`);
+    channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+  }
+  if (!channel) throw new Error(`Rift Boss notification channel (${targetChannelId}) not available.`);
 
-  const embed    = buildRiftBossEmbed({ bossName: boss, biome: targetBiome, health, timeLimit, image });
+  const embed    = buildRiftBossEmbed({ bossName: boss, biome: targetBiome, health, timeLimit, image, timestamp: now });
   const rolePing = EGG_ROLE_ID ? `<@&${EGG_ROLE_ID}>` : '';
-  const header   = `${rolePing} 🌀 ⚔️ **RIFT BOSS SPAWNED:** **${boss}** in **${targetBiome}**!`;
+  const header   = `${rolePing} 🌀 ⚔️ **RIFT BOSS SPAWNED:** **${boss}** in **${targetBiome}**! • Spawned <t:${Math.floor(now / 1000)}:R>`;
 
   await channel.send({ content: header, embeds: [embed] });
+  console.log(`[webhook/boss] 🌀 Sent Rift Boss alert to channel <#${channel.id}>`);
   return true;
 }
 
@@ -678,14 +686,14 @@ app.post('/api/notify-rift', (req, res) => {
 
 // Scanner client connected/ready alert endpoint
 app.post('/api/notify-ready', async (req, res) => {
-  const { account, jobId } = req.body ?? {};
+  const { jobId } = req.body ?? {};
 
   try {
     const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
     if (!channel) throw new Error('Notification channel not available.');
 
-    const embed  = buildScannerReadyEmbed({ account, jobId });
-    const header = `🚀 **SCANNER EXECUTED:** Account **${account || 'Roblox Client'}** is now online and scanning!`;
+    const embed  = buildScannerReadyEmbed({ jobId });
+    const header = '🚀 **SCANNER EXECUTED:** In-game scanner is now online and scanning!';
 
     await channel.send({ content: header, embeds: [embed] });
 
@@ -695,6 +703,26 @@ app.post('/api/notify-ready', async (req, res) => {
     return res.status(200).json({ ok: true, message: 'Ready alert sent.' });
   } catch (err) {
     console.error('[webhook/ready] Error:', err.message);
+    return res.status(500).json({ error: err.message || 'Failed to send alert.' });
+  }
+});
+
+// Scanner client disconnected/offline alert endpoint
+app.post('/api/notify-offline', async (req, res) => {
+  const { jobId } = req.body ?? {};
+
+  try {
+    const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
+    if (!channel) throw new Error('Notification channel not available.');
+
+    const embed  = buildScannerOfflineEmbed({ jobId });
+    const header = '⚠️ **SCANNER OFFLINE:** In-game scanner has disconnected or player left the game.';
+
+    await channel.send({ content: header, embeds: [embed] });
+
+    return res.status(200).json({ ok: true, message: 'Offline alert sent.' });
+  } catch (err) {
+    console.error('[webhook/offline] Error:', err.message);
     return res.status(500).json({ error: err.message || 'Failed to send alert.' });
   }
 });
@@ -770,6 +798,16 @@ app.post('/api/notify-egg', async (req, res) => {
   // Server-side egg deduplication (15s lockout)
   const dedupeKey = `${(eggName || '').toLowerCase().trim()}_${(finalBiome || '').toLowerCase().trim()}`;
   const now = Date.now();
+
+  // Clean stale dedupe entries to prevent memory accumulation over time
+  if (recentEggAlerts.size > 50) {
+    for (const [k, t] of recentEggAlerts.entries()) {
+      if (now - t > EGG_DEDUPE_MS * 4) {
+        recentEggAlerts.delete(k);
+      }
+    }
+  }
+
   if (recentEggAlerts.has(dedupeKey) && (now - recentEggAlerts.get(dedupeKey) < EGG_DEDUPE_MS)) {
     console.log(`[webhook/egg] ⏳ Duplicate egg alert suppressed: "${eggName}" in "${finalBiome}"`);
     return res.status(200).json({ ok: true, suppressed: true, message: 'Duplicate egg alert suppressed.' });
@@ -804,6 +842,7 @@ app.post('/api/notify-egg', async (req, res) => {
       isBannerEgg,
       bannerName,
       requiredForPet,
+      timestamp: now,
     });
 
     // Mention the specific egg rarity role instead of generic role
@@ -823,7 +862,7 @@ app.post('/api/notify-egg', async (req, res) => {
     const bannerBadge = bannerName
       ? (requiredForPet ? `⭐ **[SACRIFICE EGG: ${bannerName}]** ` : `⭐ **[BANNER EGG: ${bannerName}]** `)
       : '';
-    const header   = `${rolePing} ${bannerBadge}🚨 **${finalRarity.toUpperCase()} EGG:** **${eggName}** in **${finalBiome}**!`;
+    const header   = `${rolePing} ${bannerBadge}🚨 **${String(finalRarity).toUpperCase()} EGG:** **${eggName}** in **${finalBiome}**! • Spawned <t:${Math.floor(now / 1000)}:R>`;
 
     await channel.send({ content: header, embeds: [embed] });
 

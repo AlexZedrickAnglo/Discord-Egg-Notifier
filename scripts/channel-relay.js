@@ -36,6 +36,11 @@ const recentForwards = new Map();
 
 function isDuplicate(key) {
   const now = Date.now();
+  if (recentForwards.size > 50) {
+    for (const [k, t] of recentForwards.entries()) {
+      if (now - t > 60000) recentForwards.delete(k);
+    }
+  }
   if (recentForwards.has(key) && (now - recentForwards.get(key) < 30000)) {
     return true;
   }

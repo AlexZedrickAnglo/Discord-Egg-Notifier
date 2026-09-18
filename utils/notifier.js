@@ -30,7 +30,7 @@ function colorForRarity(rarity) {
  * Build a "Egg Spawn Alert" embed from a webhook payload.
  * Includes a Roblox deep-join link using the jobId.
  */
-function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image, isBannerEgg, bannerName, requiredForPet }) {
+function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image, isBannerEgg, bannerName, requiredForPet, timestamp }) {
   const emoji   = RARITY_EMOJI[rarity?.toLowerCase()] ?? '🥚';
   const color   = (isBannerEgg || bannerName) ? 0x9B59B6 : colorForRarity(rarity);
   const joinUrl = jobId
@@ -38,21 +38,27 @@ function buildEggSpawnEmbed({ eggName, rarity, biome, jobId, image, isBannerEgg,
     : null;
 
   const titlePrefix = bannerName ? '⭐ BANNER EGG — ' : '';
+  const spawnUnix = Math.floor((timestamp || Date.now()) / 1000);
+  const joinSection = joinUrl ? `\n\n🔗 **[Join Server](${joinUrl})**` : '';
 
   const embed = new EmbedBuilder()
     .setTitle(`${emoji}  ${titlePrefix}${(rarity ?? 'RARE').toUpperCase()} EGG SPAWNED — ${eggName}`)
     .setColor(color)
     .setDescription(
-      `A **${rarity ?? 'rare'}** egg has appeared!\n` +
-      (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : ''),
+      `# 🕒 <t:${spawnUnix}:T>\n` +
+      `### ⏳ Spawned <t:${spawnUnix}:R>\n\n` +
+      `A **${rarity ?? 'rare'}** egg has appeared in **${biome ?? 'the world'}**!` +
+      joinSection
     )
     .addFields(
-      { name: '🥚 Egg',       value: `**${eggName}**`,                    inline: true },
-      { name: '✨ Rarity',    value: rarity ?? 'Unknown',                 inline: true },
-      { name: '🌍 Biome',     value: biome  ?? 'Unknown',                 inline: true },
+      { name: '🥚 Egg',        value: `**${eggName}**`,                    inline: true },
+      { name: '✨ Rarity',     value: rarity ?? 'Unknown',                 inline: true },
+      { name: '🌍 Biome',      value: biome  ?? 'Unknown',                 inline: true },
+      { name: '⏳ Spawned',    value: `<t:${spawnUnix}:R>`,                inline: true },
+      { name: '🕒 Exact Time', value: `<t:${spawnUnix}:T>`,                inline: true },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Egg Spawn Alert' })
-    .setTimestamp();
+    .setTimestamp(new Date(spawnUnix * 1000));
 
   if (bannerName) {
     const bannerDesc = requiredForPet
@@ -163,19 +169,27 @@ function buildEventEmbed({ title, description, eventUnix, color }) {
 /**
  * Build a Rift Boss fight alert embed.
  */
-function buildRiftBossEmbed({ bossName, biome, health, timeLimit, image }) {
+function buildRiftBossEmbed({ bossName, biome, health, timeLimit, image, timestamp }) {
   const name = bossName || 'Rift Boss';
+  const spawnUnix = Math.floor((timestamp || Date.now()) / 1000);
+
   const embed = new EmbedBuilder()
     .setTitle('🌀  Rift Boss Fight Spawned!')
     .setColor(0x8A2BE2) // Deep Void Purple
-    .setDescription('A dimensional rift has opened! Assemble and defeat the boss.')
+    .setDescription(
+      `# 🕒 <t:${spawnUnix}:T>\n` +
+      `### ⏳ Spawned <t:${spawnUnix}:R>\n\n` +
+      'A dimensional rift has opened! Assemble and defeat the boss.'
+    )
     .addFields(
-      { name: '👹 Boss',  value: `**${name}**`, inline: true },
-      { name: '🗺️ Biome', value: `**${biome || 'Unknown'}**`, inline: true },
-      { name: '⚔️ Event', value: 'Rift Boss Fight', inline: true },
+      { name: '👹 Boss',       value: `**${name}**`,        inline: true },
+      { name: '🗺️ Biome',      value: `**${biome || 'Unknown'}**`, inline: true },
+      { name: '⚔️ Event',      value: 'Rift Boss Fight',   inline: true },
+      { name: '⏳ Spawned',    value: `<t:${spawnUnix}:R>`, inline: true },
+      { name: '🕒 Exact Time', value: `<t:${spawnUnix}:T>`, inline: true },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Rift Event' })
-    .setTimestamp();
+    .setTimestamp(new Date(spawnUnix * 1000));
 
   if (health) {
     embed.addFields({ name: '❤️ Health', value: `${health}`, inline: true });
@@ -259,7 +273,7 @@ function buildBannerEmbed({ bannerName, requiredPets, details, timeRemaining, jo
 /**
  * Build a Scanner Execution / Connection embed.
  */
-function buildScannerReadyEmbed({ account, jobId }) {
+function buildScannerReadyEmbed({ jobId }) {
   const joinUrl = jobId
     ? `https://www.roblox.com/games/start?placeId=${PLACE_ID}&gameInstanceId=${jobId}`
     : null;
@@ -268,12 +282,30 @@ function buildScannerReadyEmbed({ account, jobId }) {
     .setTitle('🚀  In-Game Scanner Connected!')
     .setColor(0x57F287) // Bright Green
     .setDescription(
-      `Your in-game scanner was **executed successfully** and is actively monitoring for egg spawns, rift bosses & banner rotations!\n` +
+      `An in-game scanner was **executed successfully** and is actively monitoring for egg spawns, rift bosses & banner rotations!\n` +
       (joinUrl ? `\n🔗 **[Join Server](${joinUrl})**` : '')
     )
     .addFields(
-      { name: '👤 Account',   value: `\`${account || 'Roblox Client'}\``, inline: true },
       { name: '📡 Status',    value: '🟢 Active & Listening',             inline: true },
+      { name: '🎮 Server ID', value: `\`${jobId ? (jobId.slice(0, 16) + '...') : 'Local'}\``, inline: true },
+    )
+    .setFooter({ text: 'Steal An Egg Notifier • Scanner Status' })
+    .setTimestamp();
+}
+
+/**
+ * Build a Scanner Disconnection / Offline embed.
+ */
+function buildScannerOfflineEmbed({ jobId }) {
+  return new EmbedBuilder()
+    .setTitle('🔌  In-Game Scanner Disconnected')
+    .setColor(0xED4245) // Coral Red
+    .setDescription(
+      `The in-game scanner went **offline** (player left the game or disconnected).\n` +
+      `Active event monitoring is currently paused until a scanner is re-executed.`
+    )
+    .addFields(
+      { name: '📡 Status',    value: '🔴 Offline / Inactive',             inline: true },
       { name: '🎮 Server ID', value: `\`${jobId ? (jobId.slice(0, 16) + '...') : 'Local'}\``, inline: true },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Scanner Status' })
@@ -288,6 +320,10 @@ function buildPredictionEmbed(data) {
     totalLogged,
     lastSpawn,
     nextSpawnUnix,
+    windowStartUnix,
+    windowEndUnix,
+    marginSeconds,
+    timingConfidencePct,
     nextSpawnEtaSeconds,
     averageIntervalSeconds,
     rarityOdds,
@@ -295,9 +331,14 @@ function buildPredictionEmbed(data) {
     topBiomes,
     topEggs,
     topPets,
+    top3CombinedProbability,
+    top5CombinedProbability,
   } = data;
 
   const predictedClockTime = `<t:${nextSpawnUnix}:t> (<t:${nextSpawnUnix}:R>)`;
+  const windowTime = (windowStartUnix && windowEndUnix)
+    ? `**<t:${windowStartUnix}:t> – <t:${windowEndUnix}:t>**\n*(±${marginSeconds}s • **${timingConfidencePct || 90}% Confidence**)*`
+    : predictedClockTime;
 
   const eggsToDisplay = (topEggs && topEggs.length > 0) ? topEggs : (topPets || []);
 
@@ -307,33 +348,41 @@ function buildPredictionEmbed(data) {
       ? `• ⏱️ in **${p.etaFormatted}** (<t:${p.etaUnix}:R>)`
       : '';
     const displayName = p.eggName || (p.name.endsWith('Egg') ? p.name : `${p.name} Egg`);
-    return `**${idx + 1}.** ${icon} **${displayName}** (${p.biome}) — **${p.probability}%** ${etaText}`;
+    const medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `**${idx + 1}.**`));
+    return `${medal} ${icon} **${displayName}** (${p.biome}) — **${p.probability}%** ${etaText}`;
   }).join('\n');
 
   const rarityLine = `👑 **Divine:** \`${rarityOdds.Divine}%\` | 💎 **Eternal:** \`${rarityOdds.Eternal}%\` | 🔮 **Secret:** \`${rarityOdds.Secret}%\``;
   const biomeLine = topBiomes.map((b) => {
     const countText = b.spawnCount !== undefined ? ` (${b.spawnCount}x)` : '';
-    return `• **${b.biome}:** \`${b.probability}%\`${countText}`;
+    const markovTag = b.markovProb !== undefined ? ` • Next Markov: \`${b.markovProb}%\`` : '';
+    return `• **${b.biome}:** \`${b.probability}%\`${countText}${markovTag}`;
   }).join('\n');
 
   const lastSpawnDesc = lastSpawn
     ? `**${lastSpawn.eggName}** (\`${lastSpawn.rarity}\` in **${lastSpawn.biome}**) • <t:${Math.floor(lastSpawn.timestamp / 1000)}:R>`
     : 'None recorded yet';
 
+  const top3Banner = top3CombinedProbability
+    ? `🎯 **Top 3 Combined Probability:** \`${top3CombinedProbability}%\` | **Top 5:** \`${top5CombinedProbability}%\`\n`
+    : '';
+
   const embed = new EmbedBuilder()
     .setTitle('🔮  Global Egg Spawn Predictor')
     .setColor(0x9B59B6)
     .setDescription(
       `AI-powered global spawn forecaster trained on **${totalLogged} logged spawns**.\n` +
-      `Estimates which egg will spawn next based on historical spawn frequencies, rarity distributions & pity cycles.`
+      `Estimates which egg will spawn next using Markov transitions, 90% confidence windows & Bayesian pity cycles.\n\n` +
+      top3Banner
     )
     .addFields(
-      { name: '⏰ Predicted Time Spawn', value: predictedClockTime, inline: true },
-      { name: '⏱️ Average Spawn Pace', value: `\`~${Math.round(averageIntervalSeconds / 60)}m\` (\`${averageIntervalSeconds}s\`)`, inline: true },
+      { name: '⏰ 90% Confidence Window', value: windowTime, inline: true },
+      { name: '⏱️ Expected Time', value: predictedClockTime, inline: true },
+      { name: '⚡ Spawn Pace', value: `\`~${Math.round(averageIntervalSeconds / 60)}m\` (\`${averageIntervalSeconds}s\`)`, inline: true },
       { name: '📜 Last Global Spawn', value: lastSpawnDesc, inline: false },
-      { name: '🎯 Top 10 Most Likely Eggs To Spawn (Frequency-Based)', value: eggLines || 'No eggs available', inline: false },
+      { name: `🎯 Top Candidates (Top 3 = ${top3CombinedProbability || 0}% Combined)`, value: eggLines || 'No eggs available', inline: false },
       { name: '📊 Rarity Likelihood (Empirical Bayesian)', value: `${rarityLine}\n*Pity Dry-Streaks:* Divine: \`${pity.divineDryStreak}\` spawns | Eternal: \`${pity.eternalDryStreak}\` spawns`, inline: false },
-      { name: '🗺️ Most Active Biomes', value: biomeLine || 'Unknown', inline: false },
+      { name: '🗺️ Biome Activity & Markov Forecast', value: biomeLine || 'Unknown', inline: false },
     )
     .setFooter({ text: 'Steal An Egg Notifier • Global AI Predictor' })
     .setTimestamp();
@@ -372,6 +421,7 @@ module.exports = {
   buildRiftBossEmbed,
   buildBannerEmbed,
   buildScannerReadyEmbed,
+  buildScannerOfflineEmbed,
   buildPredictionEmbed,
   buildRolePickerEmbed,
 };

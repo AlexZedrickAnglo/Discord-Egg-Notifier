@@ -6,12 +6,22 @@
 -- - Does NOT hook or overwrite TextChatService callbacks (BAC Safe)
 -- - Does NOT access CoreGui or VirtualUser (Anti-Cheat Safe)
 -- - Scans only PlayerGui and relevant lobby models (Zero World Lag)
+-- - High-performance: Early-exit filters, O(1) pet lookup, async networking
 -- ============================================================
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local TextChatService = game:GetService("TextChatService")
 local StarterGui = game:GetService("StarterGui")
+local localPlayer = Players.LocalPlayer
+if not localPlayer then
+    pcall(function()
+        localPlayer = Players.PlayerAdded:Wait()
+    end)
+    if not localPlayer then
+        localPlayer = Players.LocalPlayer
+    end
+end
 
 -- Disconnect & clean up prior scanner instance if re-executed in the same session
 local cleanupKey = "__rbx_sc_clean_fn"
@@ -30,6 +40,8 @@ globalEnv[cleanupKey] = function()
     for _, th in ipairs(activeThreads) do
         pcall(function() task.cancel(th) end)
     end
+    table.clear(activeConnections)
+    table.clear(activeThreads)
     globalEnv[cleanupKey] = nil
     print("[Notifier] 🧹 Cleaned up prior scanner instance.")
 end
@@ -48,19 +60,13 @@ local lastInGameNotifs = {}     -- Prevent in-game popup notification spam (30s 
 local recentMessages = {}       -- Message-level dedupe cache
 local watchedElements = setmetatable({}, { __mode = "k" }) -- Weak-table for safe UI garbage collection
 local isInitializing = true     -- Skip historical announcements during startup scan
+local cachedRiftContainer = nil -- Cached Rift Machine GUI container for instant scans
 
 -- Known Rift Banner pool descriptions
 local BANNER_POOLS = {
     ["Riftborn"] = "🥚 Drops **Riftborn Egg** (45% chance)\n🗺️ Biome Pool: Jungle, Snow, Volcano, Abyss Ocean",
     ["Riftbeasts"] = "🥚 Drops **Riftbeasts Egg** (35% chance)\n🗺️ Biome Pool: Volcano, Abyss Ocean, Prehistoric, Cosmic",
     ["Shattered Rift"] = "🥚 Drops **Shattered Rift Egg** (20% chance)\n👑 Exclusive Divine: **Shattered Colossus** (0.5% pull rate)\n🗺️ Biome Pool: Prehistoric, Cosmic, Cherry Blossom, Titan Temple",
-}
-
--- Biomes associated with each banner
-local BANNER_BIOMES = {
-    ["Riftborn"] = { "Jungle", "Snow", "Volcano", "Abyss Ocean" },
-    ["Riftbeasts"] = { "Volcano", "Abyss Ocean", "Prehistoric", "Cosmic" },
-    ["Shattered Rift"] = { "Prehistoric", "Cosmic", "Cherry Blossom", "Titan Temple" },
 }
 
 -- Comprehensive Pet to Biome database for Steal An Egg
@@ -119,6 +125,34 @@ local PET_TO_BIOME = {
     ["Imp"] = "Angels & Demons", ["Cherub"] = "Angels & Demons", ["Seraph"] = "Angels & Demons", ["Demon"] = "Angels & Demons", ["Angel"] = "Angels & Demons", ["Fallen Angel"] = "Angels & Demons",
 }
 
+-- Pre-indexed lowercase map for fast O(1) pet lookup (avoids ~70 string allocations per search)
+local LOWER_PET_TO_BIOME = {}
+for pet, biome in pairs(PET_TO_BIOME) do
+    LOWER_PET_TO_BIOME[pet:lower()] = biome
+end
+
+local KNOWN_BIOMES = {
+    "Jungle", "Snow", "Volcano", "Abyss Ocean", "Prehistoric",
+    "Cosmic", "Cherry Blossom", "Titan Temple", "Angels & Demons",
+    "Forest", "Lake", "Desert"
+}
+
+local BIOME_KEYWORD_MAP = {
+    {"demon", "Angels & Demons"},
+    {"angel", "Angels & Demons"},
+    {"cherry", "Cherry Blossom"},
+    {"abyss", "Abyss Ocean"},
+    {"titan", "Titan Temple"},
+    {"cosmic", "Cosmic"},
+    {"prehistoric", "Prehistoric"},
+    {"volcano", "Volcano"},
+    {"jungle", "Jungle"},
+    {"snow", "Snow"},
+    {"desert", "Desert"},
+    {"forest", "Forest"},
+    {"lake", "Lake"},
+}
+
 -- Known Steal An Egg rarities (single-word prefixes)
 local KNOWN_RARITIES = {
     ["Common"] = true, ["Uncommon"] = true, ["Rare"] = true, ["Epic"] = true,
@@ -127,13 +161,14 @@ local KNOWN_RARITIES = {
 }
 
 -- ── 0. Rich Text Stripper & Entity Decoder ────────────────────
--- Roblox TextLabels with RichText enabled contain HTML-like tags
--- (e.g. <font color="#ff0">Secret</font>) and entities that break pattern matching.
+-- Fast path: if no tags or HTML entities exist, returns original string with zero allocations.
 local function stripRichText(text)
     if not text or typeof(text) ~= "string" then return text end
+    if not (text:find("<", 1, true) or text:find("&", 1, true)) then
+        return text
+    end
     local s = text:gsub("<[^>]+>", "")
-    s = s:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&amp;", "&")
-    return s
+    return s:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&amp;", "&")
 end
 
 -- Helper: clean banner names from UI markers, percentages, and linebreaks
@@ -147,8 +182,8 @@ local function cleanBannerName(raw)
 end
 
 -- ── 1. Safe, Stealth HTTP Request Wrapper ────────────────────
--- Uses rawget + pcall to bypass any __index metamethod traps / honeypots
-local function getSafeHttpFunction()
+-- Detect and cache executor HTTP function ONCE at startup
+local function detectSafeHttpFunction()
     local fn = nil
     pcall(function()
         local env = (typeof(getgenv) == "function" and getgenv()) or getfenv()
@@ -170,13 +205,13 @@ local function getSafeHttpFunction()
     return fn
 end
 
-local function httpRequest(url, payload)
-    local reqFn = getSafeHttpFunction()
+local safeHttpReqFn = detectSafeHttpFunction()
 
-    if reqFn then
+local function httpRequest(url, payload)
+    if safeHttpReqFn then
         local body = HttpService:JSONEncode(payload)
         return pcall(function()
-            return reqFn({
+            return safeHttpReqFn({
                 Url = url,
                 url = url,
                 Method = "POST",
@@ -206,13 +241,14 @@ local function notifyUser(title, text, duration)
     lastInGameNotifs[key] = now
 
     task.spawn(function()
+        local notifData = {
+            Title = title,
+            Text = text,
+            Duration = duration
+        }
         for i = 1, 6 do
             local ok = pcall(function()
-                StarterGui:SetCore("SendNotification", {
-                    Title = title,
-                    Text = text,
-                    Duration = duration
-                })
+                StarterGui:SetCore("SendNotification", notifData)
             end)
             if ok then break end
             task.wait(0.5)
@@ -222,7 +258,7 @@ end
 
 local function sendAlert(endpoint, payload, dedupeDuration)
     dedupeDuration = dedupeDuration or 15
-    local dedupeKey = (payload.eggName or payload.bossName or payload.bannerName or payload.account or "") .. "_" .. (payload.biome or "")
+    local dedupeKey = endpoint .. "_" .. (payload.eggName or payload.bossName or payload.bannerName or payload.account or "") .. "_" .. (payload.biome or "")
     local now = os.time()
 
     if lastAlerts[dedupeKey] and (now - lastAlerts[dedupeKey] < dedupeDuration) then
@@ -254,7 +290,7 @@ local function sendAlert(endpoint, payload, dedupeDuration)
     end
 end
 
--- Cache pruning: prevents memory accumulation over extended play sessions
+-- Cache pruning: prevents memory accumulation over extended play sessions (runs every 30s)
 local function pruneCaches()
     local now = os.time()
     for k, t in pairs(recentMessages) do
@@ -267,22 +303,27 @@ local function pruneCaches()
         if now - t > 60 then lastInGameNotifs[k] = nil end
     end
 
-    -- Prune disconnected signals to prevent connection table accumulation
-    local liveConns = {}
-    for _, conn in ipairs(activeConnections) do
+    -- In-place pruning of disconnected signals (avoids table re-allocation)
+    local liveCount = 0
+    local totalCount = #activeConnections
+    for i = 1, totalCount do
+        local conn = activeConnections[i]
         if conn and conn.Connected then
-            table.insert(liveConns, conn)
+            liveCount = liveCount + 1
+            activeConnections[liveCount] = conn
         end
     end
-    activeConnections = liveConns
+    for i = liveCount + 1, totalCount do
+        activeConnections[i] = nil
+    end
 end
 
 -- ── 2. Biome & Pet Resolution ────────────────────────────────
 local function resolveBiomeForPet(petName, rawText)
     if rawText then
-        local biomes = {"Jungle", "Snow", "Volcano", "Abyss Ocean", "Prehistoric", "Cosmic", "Cherry Blossom", "Titan Temple", "Angels & Demons", "Forest", "Lake", "Desert"}
-        for _, b in ipairs(biomes) do
-            if rawText:lower():find(b:lower()) then
+        local rawLower = rawText:lower()
+        for _, b in ipairs(KNOWN_BIOMES) do
+            if rawLower:find(b:lower(), 1, true) then
                 return b
             end
         end
@@ -291,8 +332,11 @@ local function resolveBiomeForPet(petName, rawText)
         return PET_TO_BIOME[petName]
     end
     local lower = petName:lower()
-    for name, biome in pairs(PET_TO_BIOME) do
-        if lower:find(name:lower()) or name:lower():find(lower) then
+    if LOWER_PET_TO_BIOME[lower] then
+        return LOWER_PET_TO_BIOME[lower]
+    end
+    for nameLower, biome in pairs(LOWER_PET_TO_BIOME) do
+        if lower:find(nameLower, 1, true) or nameLower:find(lower, 1, true) then
             return biome
         end
     end
@@ -303,41 +347,15 @@ local function cleanBiomeName(raw)
     if not raw or typeof(raw) ~= "string" then return "Unknown" end
     local cleaned = raw:gsub("[%z\1-\31\127]", ""):gsub("^%s+", ""):gsub("[%s!%.]+$", "")
     local lower = cleaned:lower()
-    if lower:find("demon") or lower:find("angel") then
-        return "Angels & Demons"
-    elseif lower:find("cherry") then
-        return "Cherry Blossom"
-    elseif lower:find("abyss") then
-        return "Abyss Ocean"
-    elseif lower:find("titan") then
-        return "Titan Temple"
-    elseif lower:find("cosmic") then
-        return "Cosmic"
-    elseif lower:find("prehistoric") then
-        return "Prehistoric"
-    elseif lower:find("volcano") then
-        return "Volcano"
-    elseif lower:find("jungle") then
-        return "Jungle"
-    elseif lower:find("snow") then
-        return "Snow"
-    elseif lower:find("desert") then
-        return "Desert"
-    elseif lower:find("forest") then
-        return "Forest"
-    elseif lower:find("lake") then
-        return "Lake"
+    for _, entry in ipairs(BIOME_KEYWORD_MAP) do
+        if lower:find(entry[1], 1, true) then
+            return entry[2]
+        end
     end
     return cleaned
 end
 
 -- ── 3. Rift Machine & Banner Scanner (Dynamic UI Reading) ────
--- Reads actual UI elements instead of matching hardcoded names:
---   1. Active banner from "(Now)" marker in rotation list
---   2. Fallback: "X Banner" title text
---   3. Required pets from "Found In [Biome]" labels + sibling pet names
---   4. Timer from "Rotates in:" text
-
 local RARITY_FILTER = {
     legendary = true, mythic = true, cosmic = true,
     secret = true, eternal = true, divine = true,
@@ -360,75 +378,96 @@ local function scanRiftBannerAndPets()
         if not container then return end
         pcall(function()
             for _, desc in ipairs(container:GetDescendants()) do
-            if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and desc.Text and #desc.Text > 0 then
-                local txt = stripRichText(desc.Text)
+                if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and desc.Text and #desc.Text > 0 then
+                    local txt = stripRichText(desc.Text)
 
-                -- Active banner: "(Now)" marker in rotation chances (most reliable)
-                if not bannerFromNow then
-                    local nowMatch = txt:match("(.-)%s*%(Now%)") 
-                    if nowMatch then
-                        local clean = cleanBannerName(nowMatch)
-                        if clean then
-                            bannerFromNow = clean
+                    -- Active banner: "(Now)" marker in rotation chances (most reliable)
+                    if not bannerFromNow then
+                        local nowMatch = txt:match("(.-)%s*%(Now%)")
+                        if nowMatch then
+                            local clean = cleanBannerName(nowMatch)
+                            if clean then
+                                bannerFromNow = clean
+                            end
                         end
                     end
-                end
 
-                -- Banner fallback: "X Banner" title (skip rotation % entries)
-                if not bannerFromTitle and txt:find("Banner") and not txt:find("%%") and not txt:find("Rotation") and not txt:find("Chances") then
-                    local bMatch = txt:match("(.-)%s+[Bb]anner") or txt:match("(.-)%s*Banner")
-                    if bMatch then
-                        local clean = cleanBannerName(bMatch)
-                        if clean then
-                            bannerFromTitle = clean
+                    -- Banner fallback: "X Banner" title (skip rotation % entries)
+                    if not bannerFromTitle and txt:find("Banner", 1, true) and not txt:find("%", 1, true) and not txt:find("Rotation", 1, true) and not txt:find("Chances", 1, true) then
+                        local bMatch = txt:match("(.-)%s+[Bb]anner") or txt:match("(.-)%s*Banner")
+                        if bMatch then
+                            local clean = cleanBannerName(bMatch)
+                            if clean then
+                                bannerFromTitle = clean
+                            end
                         end
                     end
-                end
 
-                -- Rotation timer: "Rotates in: Xm Xs"
-                if not timeRemaining then
-                    local timer = txt:match("Rotates%s+in:%s*(.+)")
-                    if timer then
-                        timeRemaining = timer:gsub("^%s+", ""):gsub("%s+$", "")
+                    -- Rotation timer: "Rotates in: Xm Xs"
+                    if not timeRemaining then
+                        local timer = txt:match("Rotates%s+in:%s*(.+)")
+                        if timer then
+                            timeRemaining = timer:gsub("^%s+", ""):gsub("%s+$", "")
+                        end
                     end
-                end
 
-                -- "Found In [Biome]" → marks a pet slot in the Rift UI
-                local foundBiome = txt:match("Found%s+[Ii]n%s+%[(.-)%]") or txt:match("Found%s+[Ii]n%s+([%a%s&]+)")
-                if foundBiome then
-                    local cleanFound = foundBiome:gsub("^%s+", ""):gsub("%s+$", ""):gsub("[%[%]]", "")
-                    if #cleanFound > 0 then
-                        table.insert(foundInLabels, {
-                            biome = cleanFound,
-                            obj = desc,
-                        })
+                    -- "Found In [Biome]" → marks a pet slot in the Rift UI
+                    local foundBiome = txt:match("Found%s+[Ii]n%s+%[(.-)%]") or txt:match("Found%s+[Ii]n%s+([%a%s&]+)")
+                    if foundBiome then
+                        local cleanFound = foundBiome:gsub("^%s+", ""):gsub("%s+$", ""):gsub("[%[%]]", "")
+                        if #cleanFound > 0 then
+                            table.insert(foundInLabels, {
+                                biome = cleanFound,
+                                obj = desc,
+                            })
+                        end
                     end
                 end
             end
-        end
-    end)
-end
-
-    -- Check PlayerGui (Safe & fast)
-    local player = Players.LocalPlayer
-    if player and player:FindFirstChild("PlayerGui") then
-        inspectContainer(player.PlayerGui)
+        end)
     end
 
-    -- Only inspect specific lobby models, NOT entire workspace
+    -- Optimized Container Search:
+    -- 1. Check cached container first if previously identified
+    if cachedRiftContainer and cachedRiftContainer.Parent then
+        inspectContainer(cachedRiftContainer)
+    end
+
+    -- 2. Scoped ScreenGui search inside PlayerGui
+    local playerGui = localPlayer and localPlayer:FindFirstChild("PlayerGui")
+    if not bannerFromNow and not bannerFromTitle and playerGui then
+        for _, gui in ipairs(playerGui:GetChildren()) do
+            local gName = gui.Name:lower()
+            if gName:find("rift", 1, true) or gName:find("banner", 1, true) or gName:find("machine", 1, true)
+               or gName:find("altar", 1, true) or gName:find("event", 1, true) or gName:find("main", 1, true) then
+                inspectContainer(gui)
+                if bannerFromNow or bannerFromTitle then
+                    cachedRiftContainer = gui
+                    break
+                end
+            end
+        end
+
+        -- Fallback: check full PlayerGui only if specialized containers didn't contain it
+        if not bannerFromNow and not bannerFromTitle then
+            inspectContainer(playerGui)
+        end
+    end
+
+    -- 3. Only inspect workspace models that actually contain 3D GUI components (BillboardGui / SurfaceGui)
     for _, child in ipairs(workspace:GetChildren()) do
         local cName = child.Name:lower()
-        if cName:find("rift") or cName:find("machine") or cName:find("lobby") or cName:find("altar") then
-            inspectContainer(child)
+        if cName:find("rift", 1, true) or cName:find("machine", 1, true) or cName:find("lobby", 1, true) or cName:find("altar", 1, true) then
+            if child:FindFirstChildWhichIsA("BillboardGui", true) or child:FindFirstChildWhichIsA("SurfaceGui", true) then
+                inspectContainer(child)
+            end
         end
     end
 
     -- Resolve pet names from "Found In" labels by checking sibling TextLabels
-    -- Each pet card frame contains: pet name, rarity, action button, "Found In [X]"
     for _, entry in ipairs(foundInLabels) do
         local petName = nil
         local searchNode = entry.obj.Parent
-        -- Walk up 1-2 levels to find the pet card container
         for depth = 1, 2 do
             if not searchNode or petName then break end
             for _, child in ipairs(searchNode:GetChildren()) do
@@ -439,20 +478,20 @@ end
                         and not RARITY_FILTER[tLow]
                         and not ACTION_FILTER[tLow]
                         and not t:match("^%d")
-                        and not t:find("Found")
-                        and not t:find("Pet")
-                        and not t:find("%%")
-                        and not t:find("Banner")
-                        and not t:find("Rotation")
-                        and not t:find("Rotates")
-                        and not t:find("Chances")
-                        and not t:find("Current")
-                        and not t:find("The Rift")
-                        and not t:find("Sacrifice")
-                        and not t:find("Required")
+                        and not t:find("Found", 1, true)
+                        and not t:find("Pet", 1, true)
+                        and not t:find("%", 1, true)
+                        and not t:find("Banner", 1, true)
+                        and not t:find("Rotation", 1, true)
+                        and not t:find("Rotates", 1, true)
+                        and not t:find("Chances", 1, true)
+                        and not t:find("Current", 1, true)
+                        and not t:find("The Rift", 1, true)
+                        and not t:find("Sacrifice", 1, true)
+                        and not t:find("Required", 1, true)
                     then
                         petName = t
-                        if PET_TO_BIOME[t] then
+                        if PET_TO_BIOME[t] or LOWER_PET_TO_BIOME[tLow] then
                             break
                         end
                     end
@@ -502,28 +541,45 @@ local function checkAndNotifyBanner()
         -- Print structured log tag for roblox-log-watcher.js (F9 Console Bridge)
         print(string.format("[EGG_ALERT] BANNER:%s", banner))
 
-        local bannerOk = sendAlert("/api/notify-banner", {
-            bannerName    = banner,
-            details       = poolDetails,
-            timeRemaining = timeRem,
-        }, 120)
-
-        -- If /api/notify-banner 404s (e.g. Railway pending rebuild), fallback to /api/notify-egg
-        if not bannerOk then
-            sendAlert("/api/notify-egg", {
-                eggName = "Banner: " .. banner,
-                rarity  = "Rift",
-                biome   = "Lobby",
-            }, 120)
-        end
-
+        -- Immediate in-game popup confirmation
         notifyUser("Rift Banner: " .. banner, "Active now at Rift Machine!", 6)
+
+        -- Dispatch network alert
+        task.spawn(function()
+            local bannerOk = sendAlert("/api/notify-banner", {
+                bannerName    = banner,
+                details       = poolDetails,
+                timeRemaining = timeRem,
+            }, 120)
+
+            -- If /api/notify-banner 404s (e.g. Railway pending rebuild), fallback to /api/notify-egg
+            if not bannerOk then
+                sendAlert("/api/notify-egg", {
+                    eggName = "Banner: " .. banner,
+                    rarity  = "Rift",
+                    biome   = "Lobby",
+                }, 120)
+            end
+        end)
     end
 end
 
 -- ── 4. Chat & Screen Announcement Handler ────────────────────
 local function handleMessage(text)
     if not text or typeof(text) ~= "string" or #text < 5 then return end
+
+    -- FAST ANCHOR FILTER:
+    -- Announcements strictly contain one of these keywords.
+    -- Discards >99% of unrelated text updates (chat, cash counters, leaderboards, stats)
+    -- before allocating any new strings or running regex patterns.
+    if not (text:find("Egg", 1, true) or text:find("egg", 1, true)
+            or text:find("spawn", 1, true) or text:find("Spawn", 1, true)
+            or text:find("Rift", 1, true) or text:find("rift", 1, true)
+            or text:find("Banner", 1, true) or text:find("banner", 1, true)
+            or text:find("Abyss", 1, true) or text:find("abyss", 1, true)
+            or text:find("Boss", 1, true) or text:find("boss", 1, true)) then
+        return
+    end
 
     -- Strip Roblox Rich Text formatting tags (e.g. <font color="#ff0">)
     text = stripRichText(text)
@@ -537,15 +593,8 @@ local function handleMessage(text)
     end
     recentMessages[msgKey] = now
 
-    -- Periodically clean expired entries
-    if math.random(1, 5) == 1 then
-        for k, t in pairs(recentMessages) do
-            if now - t > 30 then recentMessages[k] = nil end
-        end
-    end
-
     -- Check if announcement is about banner change
-    if text:find("Rift") or text:find("Banner") or text:find("banner") then
+    if text:find("Rift", 1, true) or text:find("Banner", 1, true) or text:find("banner", 1, true) then
         task.spawn(checkAndNotifyBanner)
     end
 
@@ -556,14 +605,14 @@ local function handleMessage(text)
         if not KNOWN_RARITIES[rarity] then
             -- The first word was part of the egg name (e.g. "Shattered Rift Egg")
             eggName = rarity .. " " .. eggName
-            rarity = (eggName:lower():find("rift")) and "Rift" or "Special"
+            rarity = (eggName:lower():find("rift", 1, true)) and "Rift" or "Special"
         end
     else
         local e, b = string.match(text, "A[n]?%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%s%.]*$")
         if e and b then
             eggName = e
             biome = b
-            rarity = (e:lower():find("rift")) and "Rift" or "Special"
+            rarity = (e:lower():find("rift", 1, true)) and "Rift" or "Special"
         end
     end
 
@@ -580,7 +629,7 @@ local function handleMessage(text)
                 for _, reqPet in ipairs(lastRequiredPets) do
                     local rLow = reqPet.name:lower()
                     local eLow = eggName:lower()
-                    if eLow == rLow or eLow:find(rLow) or rLow:find(eLow) then
+                    if eLow == rLow or eLow:find(rLow, 1, true) or rLow:find(eLow, 1, true) then
                         isBannerEgg = true
                         requiredForPet = reqPet.name
                         matchingBanner = lastActiveBanner
@@ -590,7 +639,7 @@ local function handleMessage(text)
             end
 
             -- B. Check if this is an explicit Rift Egg (Riftborn, Riftbeasts, Shattered Rift)
-            if not isBannerEgg and (eggName:lower():find("rift") or text:lower():find("rift egg")) then
+            if not isBannerEgg and (eggName:lower():find("rift", 1, true) or text:lower():find("rift egg", 1, true)) then
                 isBannerEgg = true
                 matchingBanner = lastActiveBanner
             end
@@ -599,15 +648,6 @@ local function handleMessage(text)
         -- Print structured log tag for roblox-log-watcher.js (F9 Console Bridge)
         print(string.format("[EGG_ALERT] EGG:%s:%s:%s", rarity, eggName, cleanBiome))
 
-        sendAlert("/api/notify-egg", {
-            eggName        = eggName,
-            rarity         = rarity,
-            biome          = cleanBiome,
-            isBannerEgg    = isBannerEgg,
-            bannerName     = isBannerEgg and matchingBanner or nil,
-            requiredForPet = requiredForPet,
-        }, 15)
-
         local notifTitle = requiredForPet
             and "⭐ BANNER SACRIFICE EGG!"
             or (isBannerEgg and ("📜 " .. (matchingBanner or "Rift") .. " Egg!") or (rarity .. " Egg Spawned!"))
@@ -615,18 +655,30 @@ local function handleMessage(text)
             and (eggName .. " in " .. cleanBiome .. "\nNeeded for " .. matchingBanner .. "!")
             or (eggName .. " in " .. cleanBiome)
 
+        -- Immediate local in-game popup (zero latency)
         notifyUser(notifTitle, notifText, 6)
+
+        -- Dispatch network alert asynchronously
+        task.spawn(function()
+            sendAlert("/api/notify-egg", {
+                eggName        = eggName,
+                rarity         = rarity,
+                biome          = cleanBiome,
+                isBannerEgg    = isBannerEgg,
+                bannerName     = isBannerEgg and matchingBanner or nil,
+                requiredForPet = requiredForPet,
+            }, 15)
+        end)
         return
     end
 
     -- ── Pattern 2: Rift Boss / Abyss Overlord Spawn ───────────
     local lower = text:lower()
-    if (lower:find("rift") or lower:find("abyss")) and lower:find("spawn") then
-        local bossName = lower:find("abyss") and "Abyss Overlord" or "Rift Boss"
+    if (lower:find("rift", 1, true) or lower:find("abyss", 1, true)) and lower:find("spawn", 1, true) then
+        local bossName = lower:find("abyss", 1, true) and "Abyss Overlord" or "Rift Boss"
         local bossBiome = "Unknown"
-        local knownBiomes = {"Abyss Ocean", "Cherry Blossom", "Titan Temple", "Angels & Demons", "Prehistoric", "Cosmic", "Volcano", "Jungle", "Snow", "Forest", "Lake", "Desert"}
-        for _, b in ipairs(knownBiomes) do
-            if lower:find(b:lower()) then
+        for _, b in ipairs(KNOWN_BIOMES) do
+            if lower:find(b:lower(), 1, true) then
                 bossBiome = b
                 break
             end
@@ -655,12 +707,16 @@ local function handleMessage(text)
         -- Print structured log tag for roblox-log-watcher.js (F9 Console Bridge)
         print(string.format("[EGG_ALERT] BOSS:%s:%s", bossName, bossBiome))
 
-        sendAlert("/api/notify-boss", {
-            bossName = bossName,
-            biome    = bossBiome
-        }, 600)
-
+        -- Immediate local in-game popup (zero latency)
         notifyUser("Boss Spawned!", bossName .. " in " .. bossBiome, 6)
+
+        -- Dispatch network alert asynchronously
+        task.spawn(function()
+            sendAlert("/api/notify-boss", {
+                bossName = bossName,
+                biome    = bossBiome
+            }, 600)
+        end)
     end
 end
 
@@ -678,19 +734,41 @@ end)
 
 -- Helper: check if a descendant is a text element we should watch
 local function isTextElement(obj)
-    return obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")
+    -- Only TextLabel and TextButton. Excludes TextBox to avoid capturing user keystrokes.
+    return obj:IsA("TextLabel") or obj:IsA("TextButton")
 end
 
 -- Hook a single text element's Text property (only once per element)
 local function hookTextElement(desc)
     if watchedElements[desc] then return end
     watchedElements[desc] = true
+
+    local conn = nil
+    local destroyConn = nil
+
+    local function cleanupElement()
+        if conn then
+            pcall(function() conn:Disconnect() end)
+            conn = nil
+        end
+        if destroyConn then
+            pcall(function() destroyConn:Disconnect() end)
+            destroyConn = nil
+        end
+        watchedElements[desc] = nil
+    end
+
     pcall(function()
-        local conn = desc:GetPropertyChangedSignal("Text"):Connect(function()
+        conn = desc:GetPropertyChangedSignal("Text"):Connect(function()
             handleMessage(desc.Text)
         end)
         table.insert(activeConnections, conn)
+
+        -- Disconnect immediately on destroy to release closure memory
+        destroyConn = desc.Destroying:Connect(cleanupElement)
+        table.insert(activeConnections, destroyConn)
     end)
+
     -- Process current text immediately (if initializing, seed dedupe cache to prevent old history alerts)
     if desc.Text and #desc.Text > 0 then
         if isInitializing then
@@ -702,7 +780,7 @@ local function hookTextElement(desc)
     end
 end
 
--- Safe UI Watcher: hooks all text elements in a container + future additions
+-- Safe UI Watcher: hooks text elements in a container + future additions
 local function watchContainer(container)
     if not container then return end
     for _, desc in ipairs(container:GetDescendants()) do
@@ -719,19 +797,20 @@ local function watchContainer(container)
 end
 
 -- Watch PlayerGui (main source of in-game announcements)
-local player = Players.LocalPlayer
-if player then
-    local playerGui = player:WaitForChild("PlayerGui", 5)
+if localPlayer then
+    local playerGui = localPlayer:WaitForChild("PlayerGui", 5)
     if playerGui then watchContainer(playerGui) end
 end
 
--- Watch workspace for BillboardGui / SurfaceGui announcements (scoped to lobby models only, never global workspace)
+-- Watch workspace for BillboardGui / SurfaceGui announcements (only models that actually contain Guis)
 pcall(function()
     for _, child in ipairs(workspace:GetChildren()) do
         local cName = child.Name:lower()
-        if cName:find("rift") or cName:find("lobby") or cName:find("spawn")
-           or cName:find("announce") or cName:find("egg") or cName:find("event") then
-            watchContainer(child)
+        if cName:find("rift", 1, true) or cName:find("lobby", 1, true) or cName:find("spawn", 1, true)
+           or cName:find("announce", 1, true) or cName:find("egg", 1, true) or cName:find("event", 1, true) then
+            if child:FindFirstChildWhichIsA("BillboardGui", true) or child:FindFirstChildWhichIsA("SurfaceGui", true) then
+                watchContainer(child)
+            end
         end
     end
 end)
@@ -749,24 +828,23 @@ end)
 table.insert(activeThreads, loopThread)
 task.defer(checkAndNotifyBanner)
 
--- ── 7. Send Startup / Execution Alert ────────────────────────
-local accountName = player and player.Name or "In-Game Client"
+-- ── 7. Send Startup / Execution Alert (Anonymous) ───────────
+-- Print structured log tag for roblox-log-watcher.js (F9 Console Bridge) - anonymous, no player name
+print("[EGG_ALERT] READY")
 
--- Print structured log tag for roblox-log-watcher.js (F9 Console Bridge)
-print(string.format("[EGG_ALERT] READY:%s", accountName))
+task.spawn(function()
+    local readyOk = sendAlert("/api/notify-ready", {}, 5)
 
-local readyOk = sendAlert("/api/notify-ready", {
-    account = accountName
-}, 5)
-
--- If /api/notify-ready fails (e.g. Railway pending rebuild), fallback to /api/notify-egg
-if not readyOk then
-    sendAlert("/api/notify-egg", {
-        eggName = "Scanner Connected (" .. accountName .. ")",
-        rarity  = "System",
-        biome   = "Online"
-    }, 5)
-end
+    -- If /api/notify-ready fails (e.g. Railway pending rebuild), fallback to /api/notify-egg
+    if not readyOk then
+        sendAlert("/api/notify-egg", {
+            eggName = "Scanner Connected",
+            rarity  = "System",
+            biome   = "Online"
+        }, 5)
+    end
+    print("[Notifier] 📡 Server status: " .. (readyOk and "Connected ✅" or "Fallback / Pending ⚠️"))
+end)
 
 -- In-game popup confirmation
 notifyUser(
@@ -775,5 +853,55 @@ notifyUser(
     6
 )
 
-print("[Notifier] 🚀 Steal An Egg Scanner v3.3 (Stealth Mode) loaded!")
-print("[Notifier] 📡 Server status: " .. (readyOk and "Connected ✅" or "Fallback / Pending ⚠️"))
+-- ── 8. Player Disconnect / Offline Handler ───────────────────
+local hasNotifiedOffline = false
+
+local function handleOffline()
+    if hasNotifiedOffline then return end
+    hasNotifiedOffline = true
+
+    print("[EGG_ALERT] OFFLINE")
+
+    -- Synchronous alert dispatch so network packet is sent before thread tears down
+    pcall(function()
+        local offlineOk = sendAlert("/api/notify-offline", {}, 5)
+        if not offlineOk then
+            sendAlert("/api/notify-egg", {
+                eggName = "Scanner Disconnected",
+                rarity  = "System",
+                biome   = "Offline"
+            }, 5)
+        end
+    end)
+end
+
+-- Hook PlayerRemoving (fires for LocalPlayer when leaving the server)
+pcall(function()
+    local conn = Players.PlayerRemoving:Connect(function(leavingPlayer)
+        if leavingPlayer == localPlayer then
+            handleOffline()
+        end
+    end)
+    table.insert(activeConnections, conn)
+end)
+
+-- Hook AncestryChanged (fires when LocalPlayer instance is detached from Players)
+pcall(function()
+    if localPlayer then
+        local conn = localPlayer.AncestryChanged:Connect(function(_, parent)
+            if not parent then
+                handleOffline()
+            end
+        end)
+        table.insert(activeConnections, conn)
+    end
+end)
+
+-- Hook BindToClose if client environment / executor supports it
+pcall(function()
+    game:BindToClose(function()
+        handleOffline()
+    end)
+end)
+
+print("[Notifier] 🚀 Steal An Egg Scanner v3.5 (Stealth & Anonymous) loaded!")
