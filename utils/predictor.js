@@ -573,6 +573,7 @@ function getPrediction(activeBanner = null) {
 module.exports = {
   recordSpawn,
   getPrediction,
+  loadHistory,
   renderProgressBar,
   normalizeBiome,
   normalizeRarity,

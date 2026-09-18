@@ -158,6 +158,8 @@ function buildLiveStatusEmbed({
   gameData = null,
   ping = null,
   currentBanner = null,
+  prediction = null,
+  recentSpawns = [],
 } = {}) {
   const uptimeSeconds = Math.floor((Date.now() - botStartTime) / 1000);
   const days    = Math.floor(uptimeSeconds / 86400);
@@ -222,7 +224,48 @@ function buildLiveStatusEmbed({
         value: `Latency: **\`${ping != null ? `${ping}ms` : '—'}\`**\nBanner: **${currentBanner || 'Riftborn'}**`,
         inline: true,
       }
-    )
+    );
+
+  if (prediction) {
+    const topEgg = (prediction.topEggs && prediction.topEggs.length > 0)
+      ? prediction.topEggs[0]
+      : (prediction.topPets && prediction.topPets.length > 0 ? prediction.topPets[0] : null);
+    const topName = topEgg ? (topEgg.eggName || topEgg.name) : '—';
+    const topOdds = topEgg?.probability != null ? `${topEgg.probability}%` : '—';
+    const topBiome = topEgg?.biome ? ` (${topEgg.biome})` : '';
+    const paceMin = prediction.averageIntervalSeconds
+      ? `~${Math.round(prediction.averageIntervalSeconds / 60)}m`
+      : '—';
+    const nextEta = prediction.nextSpawnUnix
+      ? `<t:${prediction.nextSpawnUnix}:R> (<t:${prediction.nextSpawnUnix}:t>)`
+      : '—';
+
+    embed.addFields({
+      name: '🔮 AI Prediction Status',
+      value:
+        `Status: **🟢 Active (Forecasting)**\n` +
+        `Model Memory: **\`${prediction.totalLogged ?? 0}\` spawns logged**\n` +
+        `Next Spawn ETA: ${nextEta} • Pace: \`${paceMin}\`\n` +
+        `Top Forecast: 🥇 **${topName}**${topBiome} — **\`${topOdds}\`** odds`,
+      inline: false,
+    });
+  }
+
+  if (Array.isArray(recentSpawns) && recentSpawns.length > 0) {
+    const logLines = recentSpawns.slice(-3).reverse().map((s) => {
+      const icon = RARITY_EMOJI[(s.rarity || '').toLowerCase()] || '🥚';
+      const timeTag = s.timestamp ? `<t:${Math.floor(s.timestamp / 1000)}:R>` : '';
+      return `• ${icon} **${s.eggName}** (\`${s.rarity}\` in **${s.biome}**) — ${timeTag}`;
+    }).join('\n');
+
+    embed.addFields({
+      name: '📜 Recent Egg Spawn Logs',
+      value: logLines || '*No recent spawns recorded*',
+      inline: false,
+    });
+  }
+
+  embed
     .setFooter({ text: 'Steal An Egg Notifier • Auto-refreshes every 60s' })
     .setTimestamp();
 

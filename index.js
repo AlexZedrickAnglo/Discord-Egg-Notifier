@@ -402,6 +402,13 @@ async function updateStatusChannel() {
 
     const ping = client?.ws?.ping >= 0 ? client.ws.ping : null;
 
+    let prediction = null;
+    let recentSpawns = [];
+    try {
+      prediction = predictor.getPrediction(currentActiveBanner);
+      recentSpawns = predictor.loadHistory().slice(-3);
+    } catch (_) {}
+
     const embed = buildLiveStatusEmbed({
       activeUsers,
       botStartTime,
@@ -410,6 +417,8 @@ async function updateStatusChannel() {
       gameData,
       ping,
       currentBanner: currentActiveBanner,
+      prediction,
+      recentSpawns,
     });
 
     let targetMsg = null;
