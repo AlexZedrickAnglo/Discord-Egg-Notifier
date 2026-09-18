@@ -245,7 +245,7 @@ function buildLiveStatusEmbed({
       value:
         `Status: **🟢 Active (Forecasting)**\n` +
         `Model Memory: **\`${prediction.totalLogged ?? 0}\` spawns logged**\n` +
-        `Next Spawn ETA: ${nextEta} • Pace: \`${paceMin}\`\n` +
+        `Estimated Spawn Time: ${nextEta} • Pace: \`${paceMin}\`\n` +
         `Top Forecast: 🥇 **${topName}**${topBiome} — **\`${topOdds}\`** odds`,
       inline: false,
     });
@@ -438,16 +438,17 @@ function buildPredictionEmbed(data) {
     top3CombinedProbability,
   } = data;
 
-  const predictedTime = `<t:${nextSpawnUnix}:R> (<t:${nextSpawnUnix}:t>)`;
+  const predictedTime = `<t:${nextSpawnUnix}:t> (<t:${nextSpawnUnix}:R>)`;
   const top3Tag = top3CombinedProbability ? ` • **Top 3:** \`${top3CombinedProbability}%\`` : '';
-  const description = `⏳ **Next Spawn:** ${predictedTime} • **Pace:** \`~${Math.round(averageIntervalSeconds / 60)}m\`${top3Tag}`;
+  const description = `⏰ **Estimated Next Spawn Time:** ${predictedTime} • **Pace:** \`~${Math.round(averageIntervalSeconds / 60)}m\`${top3Tag}`;
 
   const eggsToDisplay = (topEggs && topEggs.length > 0) ? topEggs : (topPets || []);
   const eggLines = eggsToDisplay.slice(0, 5).map((p, idx) => {
     const icon = RARITY_EMOJI[p.rarity.toLowerCase()] || '🥚';
     const displayName = p.eggName || (p.name.endsWith('Egg') ? p.name : `${p.name} Egg`);
     const medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `**${idx + 1}.**`));
-    return `${medal} ${icon} **${displayName}** (${p.biome}) — **${p.probability}%**`;
+    const etaStr = p.etaUnix ? ` • ⏱️ <t:${p.etaUnix}:t> (<t:${p.etaUnix}:R>)` : '';
+    return `${medal} ${icon} **${displayName}** (${p.biome}) — **${p.probability}%**${etaStr}`;
   }).join('\n');
 
   const lastSpawnDesc = lastSpawn
