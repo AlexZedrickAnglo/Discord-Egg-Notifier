@@ -47,6 +47,7 @@ const {
   buildLiveStatusEmbed,
 } = require('./utils/notifier');
 const predictor = require('./utils/predictor');
+const { dataPath } = require('./utils/dataDir');
 
 // ═════════════════════════════════════════════════════════════
 //  1.  GLOBAL STATE
@@ -65,7 +66,7 @@ const EGG_DEDUPE_MS     = 15_000;  // 15 seconds lockout
 let predictionChannelId     = process.env.PREDICTION_CHANNEL_ID || '1550126931100303480';
 let riftBossChannelId       = process.env.RIFT_BOSS_CHANNEL_ID || '1550467255710785727';
 let livePredictionMessageId = null;
-const PREDICTION_STATE_FILE = path.join(__dirname, 'data', 'prediction-state.json');
+const PREDICTION_STATE_FILE = dataPath('prediction-state.json');
 
 function loadPredictionState() {
   try {
@@ -154,7 +155,7 @@ async function updatePredictionChannel() {
 // ── Rift Banner Dedicated Channel (1550149335088496755) ──────
 let riftBannerChannelId     = process.env.RIFT_BANNER_CHANNEL_ID || '1550149335088496755';
 let liveBannerMessageId     = null;
-const BANNER_STATE_FILE     = path.join(__dirname, 'data', 'banner-state.json');
+const BANNER_STATE_FILE     = dataPath('banner-state.json');
 
 function loadBannerState() {
   try {
@@ -278,7 +279,7 @@ async function updateBannerChannel({ bannerName, requiredPets, details, timeRema
 // ── Dedicated Bot & Scanner Status Channel (1550494247784947772) ──────
 let statusChannelId       = process.env.STATUS_CHANNEL_ID || '1550494247784947772';
 let liveStatusMessageId   = null;
-const STATUS_STATE_FILE   = path.join(__dirname, 'data', 'bot-status-state.json');
+const STATUS_STATE_FILE   = dataPath('bot-status-state.json');
 
 function loadStatusState() {
   try {
@@ -513,7 +514,7 @@ const EMOJI_ROLE_MAP = {
 };
 
 let liveRolePickerMessageId = null;
-const ROLE_PICKER_STATE_FILE = path.join(__dirname, 'data', 'role-picker-state.json');
+const ROLE_PICKER_STATE_FILE = dataPath('role-picker-state.json');
 
 function loadRolePickerState() {
   try {

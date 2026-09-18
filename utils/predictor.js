@@ -6,9 +6,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 
-const HISTORY_PATH = path.join(__dirname, '..', 'data', 'spawn-history.json');
-const EGGS_PATH = path.join(__dirname, '..', 'data', 'eggs.json');
+const HISTORY_PATH = dataPath('spawn-history.json');
+const EGGS_PATH = dataPath('eggs.json');
 
 const KNOWN_BIOMES = [
   'Jungle',
