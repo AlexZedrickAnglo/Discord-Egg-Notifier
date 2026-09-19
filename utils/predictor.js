@@ -198,7 +198,7 @@ function normalizeBiome(raw) {
 /**
  * Record a newly spawned egg into global learning history
  */
-function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), isBannerEgg, bannerName }) {
+function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), jobId, isBannerEgg, bannerName }) {
   if (!eggName) return;
 
   const rawName = String(eggName).replace(/\s+Egg$/i, '').trim();
@@ -225,20 +225,28 @@ function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), isBannerE
   const cleanBiome = normalizeBiome(biome);
   const cleanRarity = normalizeRarity(rarity);
 
-  // Deduplicate against recent recorded spawns within 45 seconds
+  // Deduplicate against recent recorded spawns:
+  // Strictly prevent duplicate network retransmissions from the same server (within 4s),
+  // while allowing distinct server spawns (jobId) and genuine multi-spawns.
   if (history.length > 0) {
-    const recentSpawns = history.slice(-5);
+    const recentSpawns = history.slice(-6);
     const isDup = recentSpawns.some((h) => {
       const hName = (h.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
       const hBiome = normalizeBiome(h.biome).toLowerCase();
-      return (
-        hName === lowerName &&
-        (hBiome === cleanBiome.toLowerCase() || cleanBiome === 'Unknown' || hBiome === 'Unknown') &&
-        Math.abs(timestamp - h.timestamp) < 45000
-      );
+      const sameEggAndBiome = (hName === lowerName) &&
+        (hBiome === cleanBiome.toLowerCase() || cleanBiome === 'Unknown' || hBiome === 'Unknown');
+      const timeDiff = Math.abs(timestamp - h.timestamp);
+
+      // If both spawns have a jobId and they differ, they are from different game servers
+      if (jobId && h.jobId && String(jobId) !== String(h.jobId)) {
+        return false;
+      }
+
+      // Fast network retry window: 4 seconds
+      return sameEggAndBiome && timeDiff < 4000;
     });
     if (isDup) {
-      console.log(`[predictor] ⏳ Duplicate spawn suppressed in predictor: "${rawName}" in "${cleanBiome}"`);
+      console.log(`[predictor] ⏳ Duplicate spawn suppressed in predictor: "${rawName}" in "${cleanBiome}" (jobId: ${jobId || 'global'})`);
       return;
     }
   }
@@ -248,6 +256,7 @@ function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), isBannerE
     rarity: cleanRarity,
     biome: cleanBiome,
     timestamp,
+    jobId: jobId || null,
     isBannerEgg: !!isBannerEgg,
     bannerName: bannerName || null,
   });
@@ -299,17 +308,23 @@ function getPrediction(activeBanner = null) {
     const windowStartUnix = Math.floor((nextTs - marginMs) / 1000);
     const windowEndUnix = Math.floor((nextTs + marginMs) / 1000);
 
+    const lastSpawnClean = cachedPredictionBase.result?.lastSpawn
+      ? (cachedPredictionBase.result.lastSpawn.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase()
+      : null;
+
     const rankedEggs = cachedPredictionBase.sortedEggs.map((e, idx) => {
-      const etaSecs = Math.round(secondsRemaining + (idx * avgSec));
-      const mins = Math.floor(etaSecs / 60);
-      const secs = etaSecs % 60;
+      const mins = Math.floor(secondsRemaining / 60);
+      const secs = secondsRemaining % 60;
       const etaFormatted = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-      const etaUnix = Math.floor((now + etaSecs * 1000) / 1000);
+      const isLastSpawn = !!(lastSpawnClean && e.name.toLowerCase().trim() === lastSpawnClean);
+
       return {
         ...e,
-        etaSeconds: etaSecs,
+        rank: idx + 1,
+        isLastSpawn,
+        etaSeconds: secondsRemaining,
         etaFormatted,
-        etaUnix,
+        etaUnix: nextSpawnUnix,
       };
     });
 
@@ -521,6 +536,17 @@ function getPrediction(activeBanner = null) {
   // 5. Active Banner affinity biomes
   const bannerBiomes = (activeBanner && BANNER_BIOME_MAP[activeBanner]) ? BANNER_BIOME_MAP[activeBanner] : [];
 
+  // 5b. Compute Empirical Repeat Likelihood from History
+  let repeatSpawnCount = 0;
+  for (let i = 1; i < history.length; i++) {
+    const prev = (history[i - 1].eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
+    const curr = (history[i].eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
+    if (prev && curr && prev === curr) {
+      repeatSpawnCount++;
+    }
+  }
+  const empiricalRepeatRate = history.length > 1 ? (repeatSpawnCount / (history.length - 1)) : 0.08;
+
   // 6. Calculate Frequency-Based Score for Every Egg
   let totalScore = 0;
   const rawEggScores = [];
@@ -545,17 +571,20 @@ function getPrediction(activeBanner = null) {
 
       let score = rProb * freqFactor * biomeFactor;
 
-      // Recency cooldown penalty & dry streak balancing:
-      // The egg that spawned in the previous reset receives an immediate cooldown penalty,
-      // dropping it out of the top slot so the top 10 dynamically rotates.
+      // Soft recency balancing:
+      // In Steal An Egg, repeat spawns and simultaneous spawns legitimately occur.
+      // Instead of an artificial 95% penalty (0.05) that eliminates repeat predictions,
+      // apply a soft balancing factor calibrated with empirical repeat probability.
+      // This allows naturally frequent eggs to remain in the Top Candidates if probability warrants it.
       if (streak === 0) {
-        score *= 0.05; // Just spawned! 95% elimination cooldown
+        const repeatDampener = Math.min(0.90, Math.max(0.72, 0.70 + (empiricalRepeatRate * 1.5)));
+        score *= repeatDampener;
       } else if (streak === 1) {
-        score *= 0.40; // Spawned 1 reset ago
+        score *= 0.88;
       } else if (streak === 2) {
-        score *= 0.75; // Spawned 2 resets ago
+        score *= 0.95;
       } else {
-        score *= (1.0 + Math.min(streak - 2, 8) * 0.05); // Gradual return to strength
+        score *= (1.0 + Math.min(streak - 2, 8) * 0.04);
       }
 
       // Active banner affinity boost
@@ -590,21 +619,23 @@ function getPrediction(activeBanner = null) {
     })
     .sort((a, b) => b.probability - a.probability);
 
-  // Compute predicted ETA in xx:xx minutes based on rank and spawn pace
+  // Compute predicted ETA for the upcoming reset wave
   const avgSec = Math.round(medianIntervalMs / 1000);
+  const lastSpawnClean = lastSpawn ? (lastSpawn.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase() : null;
 
   const rankedEggs = sortedEggs.map((e, idx) => {
-    const etaSecs = Math.round(secondsRemaining + (idx * avgSec));
-    const mins = Math.floor(etaSecs / 60);
-    const secs = etaSecs % 60;
+    const mins = Math.floor(secondsRemaining / 60);
+    const secs = secondsRemaining % 60;
     const etaFormatted = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    const etaUnix = Math.floor((now + etaSecs * 1000) / 1000);
+    const isLastSpawn = !!(lastSpawnClean && e.name.toLowerCase().trim() === lastSpawnClean);
 
     return {
       ...e,
-      etaSeconds: etaSecs,
+      rank: idx + 1,
+      isLastSpawn,
+      etaSeconds: secondsRemaining,
       etaFormatted,
-      etaUnix,
+      etaUnix: nextSpawnUnix,
     };
   });
 
@@ -631,6 +662,13 @@ function getPrediction(activeBanner = null) {
     sortedEggs.slice(0, 5).reduce((acc, e) => acc + e.probability, 0) * 10
   ) / 10;
 
+  const lastSpawnMatch = sortedEggs.find((e) => e.name.toLowerCase().trim() === lastSpawnClean);
+  const repeatOdds = {
+    eggName: lastSpawn ? lastSpawn.eggName : null,
+    probability: lastSpawnMatch ? lastSpawnMatch.probability : 0,
+    historicalRatePct: Math.round(empiricalRepeatRate * 1000) / 10,
+  };
+
   const finalResult = {
     totalLogged: history.length,
     lastSpawn,
@@ -655,6 +693,7 @@ function getPrediction(activeBanner = null) {
     topPets: rankedEggs.slice(0, 10), // Backwards compatibility alias
     top3CombinedProbability,
     top5CombinedProbability,
+    repeatOdds,
   };
 
   cachedPredictionKey = currentKey;

@@ -61,7 +61,7 @@ let lastBossAlertTime   = 0;
 let lastBossAlertInfo   = null;
 const BOSS_DEDUPE_MS    = 600_000; // 10 minutes lockout (Rift Boss event duration)
 const recentEggAlerts   = new Map();
-const EGG_DEDUPE_MS     = 15_000;  // 15 seconds lockout
+const EGG_DEDUPE_MS     = 4_000;   // 4 seconds lockout (prevents packet retry spam without dropping multi-spawns)
 
 let predictionChannelId     = process.env.PREDICTION_CHANNEL_ID || '1550126931100303480';
 let riftBossChannelId       = process.env.RIFT_BOSS_CHANNEL_ID || '1550467255710785727';
@@ -1165,8 +1165,9 @@ app.post('/api/notify-egg', async (req, res) => {
   const finalRarity = rarity  || dbMatch?.rarity || 'Unknown';
   const finalBiome  = biome   || dbMatch?.biome  || 'Unknown';
 
-  // Server-side egg deduplication (15s lockout) using canonical egg name
-  const dedupeKey = `${canonicalName.toLowerCase()}_${(finalBiome || '').toLowerCase().trim()}`;
+  // Server-side egg deduplication using server JobId & canonical egg name
+  const serverKey = jobId ? String(jobId).slice(-16) : 'global';
+  const dedupeKey = `${serverKey}_${canonicalName.toLowerCase()}_${(finalBiome || '').toLowerCase().trim()}`;
   const now = Date.now();
 
   // Clean stale dedupe entries to prevent memory accumulation over time
@@ -1179,17 +1180,18 @@ app.post('/api/notify-egg', async (req, res) => {
   }
 
   if (recentEggAlerts.has(dedupeKey) && (now - recentEggAlerts.get(dedupeKey) < EGG_DEDUPE_MS)) {
-    console.log(`[webhook/egg] ⏳ Duplicate egg alert suppressed: "${canonicalName}" in "${finalBiome}"`);
+    console.log(`[webhook/egg] ⏳ Duplicate egg alert suppressed: "${canonicalName}" in "${finalBiome}" (${serverKey})`);
     return res.status(200).json({ ok: true, suppressed: true, message: 'Duplicate egg alert suppressed.' });
   }
   recentEggAlerts.set(dedupeKey, now);
 
-  // Feed canonical egg into global AI predictor
+  // Feed canonical egg into global AI predictor with server jobId
   predictor.recordSpawn({
     eggName: canonicalName,
     rarity: finalRarity,
     biome: finalBiome,
     timestamp: now,
+    jobId,
     isBannerEgg,
     bannerName: bannerName || currentActiveBanner,
   });

@@ -657,12 +657,12 @@ local function handleMessage(text)
     -- Strip Roblox Rich Text formatting tags (e.g. <font color="#ff0">)
     text = stripRichText(text)
 
-    -- Message-level dedupe: prevent the same text from being processed
-    -- twice when both chat and UI watcher fire for the same spawn
+    -- Message-level dedupe: debounce simultaneous chat and UI watcher firings
+    -- without suppressing separate spawns in the same reset cycle
     local msgKey = text:lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
     local now = os.time()
-    if recentMessages[msgKey] and (now - recentMessages[msgKey] < 30) then
-        return -- Already processed this exact message
+    if recentMessages[msgKey] and (now - recentMessages[msgKey] < 3) then
+        return -- Already processed this exact announcement within 3s
     end
     recentMessages[msgKey] = now
 
@@ -752,7 +752,7 @@ local function handleMessage(text)
                 isBannerEgg    = isBannerEgg,
                 bannerName     = isBannerEgg and matchingBanner or nil,
                 requiredForPet = requiredForPet,
-            }, 15)
+            }, 3)
         end)
         return
     end
