@@ -313,18 +313,20 @@ function getPrediction(activeBanner = null) {
       : null;
 
     const rankedEggs = cachedPredictionBase.sortedEggs.map((e, idx) => {
-      const mins = Math.floor(secondsRemaining / 60);
-      const secs = secondsRemaining % 60;
+      const etaSecs = Math.round(secondsRemaining + (idx * avgSec));
+      const mins = Math.floor(etaSecs / 60);
+      const secs = etaSecs % 60;
       const etaFormatted = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      const etaUnix = Math.floor((now + etaSecs * 1000) / 1000);
       const isLastSpawn = !!(lastSpawnClean && e.name.toLowerCase().trim() === lastSpawnClean);
 
       return {
         ...e,
         rank: idx + 1,
         isLastSpawn,
-        etaSeconds: secondsRemaining,
+        etaSeconds: etaSecs,
         etaFormatted,
-        etaUnix: nextSpawnUnix,
+        etaUnix,
       };
     });
 
@@ -619,23 +621,25 @@ function getPrediction(activeBanner = null) {
     })
     .sort((a, b) => b.probability - a.probability);
 
-  // Compute predicted ETA for the upcoming reset wave
+  // Compute predicted ETA in xx:xx minutes based on rank and spawn pace
   const avgSec = Math.round(medianIntervalMs / 1000);
   const lastSpawnClean = lastSpawn ? (lastSpawn.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase() : null;
 
   const rankedEggs = sortedEggs.map((e, idx) => {
-    const mins = Math.floor(secondsRemaining / 60);
-    const secs = secondsRemaining % 60;
+    const etaSecs = Math.round(secondsRemaining + (idx * avgSec));
+    const mins = Math.floor(etaSecs / 60);
+    const secs = etaSecs % 60;
     const etaFormatted = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    const etaUnix = Math.floor((now + etaSecs * 1000) / 1000);
     const isLastSpawn = !!(lastSpawnClean && e.name.toLowerCase().trim() === lastSpawnClean);
 
     return {
       ...e,
       rank: idx + 1,
       isLastSpawn,
-      etaSeconds: secondsRemaining,
+      etaSeconds: etaSecs,
       etaFormatted,
-      etaUnix: nextSpawnUnix,
+      etaUnix,
     };
   });
 

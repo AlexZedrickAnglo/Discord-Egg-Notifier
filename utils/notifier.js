@@ -452,8 +452,8 @@ function buildPredictionEmbed(data) {
     const displayName = p.eggName || (p.name.endsWith('Egg') ? p.name : `${p.name} Egg`);
     const medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `**${idx + 1}.**`));
     const repeatBadge = p.isLastSpawn ? ' `[Repeat Contender]`' : '';
-    const barStr = p.bar ? ` \`${p.bar}\`` : '';
-    return `${medal} ${icon} **${displayName}** (${p.biome})${repeatBadge} — **${p.probability}%**${barStr}`;
+    const etaStr = p.etaUnix ? ` • ⏱️ <t:${p.etaUnix}:t> (<t:${p.etaUnix}:R>)` : '';
+    return `${medal} ${icon} **${displayName}** (${p.biome})${repeatBadge} — **${p.probability}%**${etaStr}`;
   }).join('\n');
 
   const lastSpawnDesc = lastSpawn
