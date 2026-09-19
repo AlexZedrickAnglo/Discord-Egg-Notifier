@@ -53,9 +53,9 @@ const { dataPath } = require('./utils/dataDir');
 //  1.  GLOBAL STATE
 // ═════════════════════════════════════════════════════════════
 const botStartTime    = Date.now();
-let notifyChannelId   = process.env.NOTIFY_CHANNEL_ID;
+let notifyChannelId   = process.env.NOTIFY_CHANNEL_ID || '1548688974250246265';
 let lastKnownUpdated  = null;
-const EGG_ROLE_ID     = process.env.EGG_ROLE_ID;
+const EGG_ROLE_ID     = process.env.EGG_ROLE_ID || '1548692821190381638';
 let currentActiveBanner = null;
 let lastBossAlertTime   = 0;
 let lastBossAlertInfo   = null;
