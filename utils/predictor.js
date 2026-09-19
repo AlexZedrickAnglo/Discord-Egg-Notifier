@@ -711,8 +711,62 @@ function getPrediction(activeBanner = null) {
   return finalResult;
 }
 
+/**
+ * Merge external or recovered spawn records into spawn history array.
+ * Deduplicates by eggName and timestamp (within 5 seconds).
+ * Returns total history count.
+ */
+function mergeHistory(externalSpawns) {
+  if (!Array.isArray(externalSpawns) || externalSpawns.length === 0) {
+    return loadHistory().length;
+  }
+
+  const history = loadHistory();
+  const existingKeys = new Set();
+  for (const h of history) {
+    const raw = (h.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
+    const tsBucket = Math.floor((h.timestamp || 0) / 5000);
+    existingKeys.add(`${raw}_${tsBucket}`);
+  }
+
+  let added = 0;
+  for (const s of externalSpawns) {
+    const rawName = String(s.eggName || '').replace(/\s+Egg$/i, '').trim();
+    if (!rawName) continue;
+    const ts = Number(s.timestamp) || Date.now();
+    const tsBucket = Math.floor(ts / 5000);
+    const key = `${rawName.toLowerCase()}_${tsBucket}`;
+
+    if (!existingKeys.has(key)) {
+      existingKeys.add(key);
+      history.push({
+        eggName: rawName,
+        rarity: normalizeRarity(s.rarity),
+        biome: normalizeBiome(s.biome),
+        timestamp: ts,
+        jobId: s.jobId || null,
+        isBannerEgg: !!s.isBannerEgg,
+        bannerName: s.bannerName || null,
+      });
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    history.sort((a, b) => a.timestamp - b.timestamp);
+    saveHistory(history);
+    cachedEggDb = null;
+    cachedPredictionKey = null;
+    cachedPredictionBase = null;
+    console.log(`[predictor] 🔄 Merged ${added} recovered spawns into history. Total history: ${history.length}`);
+  }
+
+  return history.length;
+}
+
 module.exports = {
   recordSpawn,
+  mergeHistory,
   getPrediction,
   loadHistory,
   renderProgressBar,

@@ -1256,6 +1256,130 @@ app.post('/api/egg-spawn', (req, res) => {
 // Health check
 app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: Date.now() - botStartTime }));
 
+/**
+ * Parse an egg spawn alert message from the Discord notification channel.
+ * Supports both rich embeds and plain text announcement headers.
+ */
+function parseEggAlertMessage(msg) {
+  if (!msg) return null;
+  const embed = msg.embeds?.[0];
+  const content = msg.content || '';
+
+  // 1. Try parsing rich embed if available
+  if (embed) {
+    const footerText = embed.footer?.text || '';
+    const titleText = embed.title || '';
+    const isEggAlert = footerText.includes('Egg Spawn Alert') || titleText.includes('EGG SPAWNED');
+
+    if (isEggAlert) {
+      let eggVal = null;
+      let rarityVal = null;
+      let biomeVal = null;
+      let jobIdVal = null;
+
+      for (const f of embed.fields || []) {
+        const fName = (f.name || '').toLowerCase();
+        const fVal = (f.value || '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+        if (fName.includes('egg') && !eggVal) {
+          eggVal = fVal.replace(/\s+Egg$/i, '').trim();
+        } else if (fName.includes('rarity') && !rarityVal) {
+          rarityVal = fVal;
+        } else if (fName.includes('biome') && !biomeVal) {
+          biomeVal = fVal;
+        } else if (fName.includes('server') && !jobIdVal) {
+          jobIdVal = fVal !== 'Local' ? fVal : null;
+        }
+      }
+
+      if (!eggVal && titleText.includes('—')) {
+        const parts = titleText.split('—');
+        eggVal = (parts[parts.length - 1] || '').trim().replace(/\s+Egg$/i, '');
+      }
+
+      if (eggVal) {
+        const timestamp = embed.timestamp
+          ? new Date(embed.timestamp).getTime()
+          : msg.createdTimestamp;
+
+        return {
+          eggName: eggVal,
+          rarity: rarityVal || 'Secret',
+          biome: biomeVal || 'Unknown',
+          timestamp,
+          jobId: jobIdVal,
+        };
+      }
+    }
+  }
+
+  // 2. Secondary fallback: parse text content
+  const match = content.match(/🚨\s+\*\*([A-Za-z]+)\s+EGG:\*\*\s+\*\*(.+?)(?:\s+Egg)?\*\*\s+in\s+\*\*(.+?)\*\*!/i);
+  if (match) {
+    return {
+      rarity: match[1].trim(),
+      eggName: match[2].trim().replace(/\s+Egg$/i, ''),
+      biome: match[3].trim(),
+      timestamp: msg.createdTimestamp,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Hydrate and restore spawn history directly from the Discord notification channel.
+ * Ensures logged spawns and prediction accuracy never reset across Railway deployments.
+ */
+async function hydrateHistoryFromDiscord(maxMessages = 400) {
+  if (!notifyChannelId) return;
+
+  try {
+    const channel = await getChannel(notifyChannelId);
+    if (!channel) return;
+
+    console.log('[history-sync] 🔍 Verifying past egg spawns from Discord notification channel...');
+    const recoveredSpawns = [];
+    let lastId = null;
+    let fetchedCount = 0;
+
+    while (fetchedCount < maxMessages) {
+      const fetchLimit = Math.min(100, maxMessages - fetchedCount);
+      const options = { limit: fetchLimit };
+      if (lastId) options.before = lastId;
+
+      const batch = await channel.messages.fetch(options).catch((err) => {
+        console.warn('[history-sync] Message fetch batch error:', err.message);
+        return null;
+      });
+
+      if (!batch || batch.size === 0) break;
+
+      for (const msg of batch.values()) {
+        const parsed = parseEggAlertMessage(msg);
+        if (parsed) {
+          recoveredSpawns.push(parsed);
+        }
+      }
+
+      fetchedCount += batch.size;
+      lastId = batch.last()?.id;
+      if (batch.size < fetchLimit) break;
+    }
+
+    if (recoveredSpawns.length > 0) {
+      recoveredSpawns.sort((a, b) => a.timestamp - b.timestamp);
+      const totalCount = predictor.mergeHistory(recoveredSpawns);
+      console.log(`[history-sync] ✅ Verified & hydrated ${recoveredSpawns.length} past spawns from Discord. Total logged spawns: ${totalCount}`);
+      updatePredictionChannel().catch(() => {});
+      updateStatusChannel().catch(() => {});
+    } else {
+      console.log('[history-sync] ℹ️ No additional past spawns found in notification channel.');
+    }
+  } catch (err) {
+    console.error('[history-sync] Hydration error:', err.message);
+  }
+}
+
 // ═════════════════════════════════════════════════════════════
 //  6.  STARTUP
 // ═════════════════════════════════════════════════════════════
@@ -1270,6 +1394,11 @@ client.once('ready', () => {
   console.log(`   Rift boss role       : ${RIFT_BOSS_ROLE_ID}`);
   console.log(`   Auto-role (members)  : ${AUTOROLE_ID}`);
   console.log(`   Egg database         : ${require('./utils/roblox').eggLookup.size} eggs loaded`);
+
+  // Hydrate spawn history from Discord notification channel so logged spawns never reset across deploys
+  hydrateHistoryFromDiscord().catch((err) => {
+    console.error('[history-sync] Startup hydration error:', err.message);
+  });
 
   // Start the Roblox update poller (every 60 seconds).
   setInterval(pollGameUpdates, 60_000);

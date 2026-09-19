@@ -18,9 +18,13 @@ const path = require('path');
 const PROJECT_DATA_DIR = path.join(__dirname, '..', 'data');
 
 // Railway persistent volume or explicit override, fallback to project ./data/
-const PERSISTENT_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
-  ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'data')
-  : (process.env.DATA_DIR || PROJECT_DATA_DIR);
+let persistentDir = PROJECT_DATA_DIR;
+if (process.env.RAILWAY_VOLUME_MOUNT_PATH) {
+  persistentDir = process.env.RAILWAY_VOLUME_MOUNT_PATH;
+} else if (process.env.DATA_DIR) {
+  persistentDir = process.env.DATA_DIR;
+}
+const PERSISTENT_DIR = persistentDir;
 
 // Ensure persistent directory exists
 if (!fs.existsSync(PERSISTENT_DIR)) {

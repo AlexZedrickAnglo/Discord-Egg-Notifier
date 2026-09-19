@@ -469,7 +469,7 @@ function buildPredictionEmbed(data) {
       { name: '📊 Rarity Odds', value: rarityLine, inline: false },
       { name: '🗺️ Active Biomes', value: biomeLine || 'Unknown', inline: false },
     )
-    .setFooter({ text: 'Steal An Egg Notifier • Global AI Predictor' })
+    .setFooter({ text: `Steal An Egg Notifier • Global AI Predictor • ${data.totalLogged || 0} Spawns Logged` })
     .setTimestamp();
 
   return embed;
