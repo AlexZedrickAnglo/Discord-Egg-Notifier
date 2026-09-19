@@ -441,19 +441,15 @@ function buildPredictionEmbed(data) {
 
   const predictedTime = `<t:${nextSpawnUnix}:t> (<t:${nextSpawnUnix}:R>)`;
   const top3Tag = top3CombinedProbability ? ` • **Top 3:** \`${top3CombinedProbability}%\`` : '';
-  const repeatTag = (repeatOdds && repeatOdds.probability > 0)
-    ? ` • **Repeat Chance:** \`${repeatOdds.probability}%\``
-    : '';
-  const description = `⏰ **Estimated Next Spawn Time:** ${predictedTime} • **Pace:** \`~${Math.round(averageIntervalSeconds / 60)}m\`${top3Tag}${repeatTag}`;
+  const description = `⏰ **Estimated Next Spawn Time:** ${predictedTime} • **Pace:** \`~${Math.round(averageIntervalSeconds / 60)}m\`${top3Tag}`;
 
   const eggsToDisplay = (topEggs && topEggs.length > 0) ? topEggs : (topPets || []);
   const eggLines = eggsToDisplay.slice(0, 5).map((p, idx) => {
     const icon = RARITY_EMOJI[p.rarity.toLowerCase()] || '🥚';
     const displayName = p.eggName || (p.name.endsWith('Egg') ? p.name : `${p.name} Egg`);
     const medal = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `**${idx + 1}.**`));
-    const repeatBadge = p.isLastSpawn ? ' `[Repeat Contender]`' : '';
     const etaStr = p.etaUnix ? ` • ⏱️ <t:${p.etaUnix}:t> (<t:${p.etaUnix}:R>)` : '';
-    return `${medal} ${icon} **${displayName}** (${p.biome})${repeatBadge} — **${p.probability}%**${etaStr}`;
+    return `${medal} ${icon} **${displayName}** (${p.biome}) — **${p.probability}% Spawn Chance**${etaStr}`;
   }).join('\n');
 
   const lastSpawnDesc = lastSpawn
