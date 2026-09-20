@@ -61,7 +61,7 @@ let lastBossAlertTime   = 0;
 let lastBossAlertInfo   = null;
 const BOSS_DEDUPE_MS    = 600_000; // 10 minutes lockout (Rift Boss event duration)
 const recentEggAlerts   = new Map();
-const EGG_DEDUPE_MS     = 4_000;   // 4 seconds lockout (prevents packet retry spam without dropping multi-spawns)
+const EGG_DEDUPE_MS     = 45_000;  // 45s lockout for global deduplication (all game servers spawn the identical global egg simultaneously)
 
 let predictionChannelId     = process.env.PREDICTION_CHANNEL_ID || '1550126931100303480';
 let riftBossChannelId       = process.env.RIFT_BOSS_CHANNEL_ID || '1550467255710785727';
@@ -1165,33 +1165,55 @@ app.post('/api/notify-egg', async (req, res) => {
   const finalRarity = rarity  || dbMatch?.rarity || 'Unknown';
   const finalBiome  = biome   || dbMatch?.biome  || 'Unknown';
 
-  // Server-side egg deduplication using server JobId & canonical egg name
-  const serverKey = jobId ? String(jobId).slice(-16) : 'global';
-  const dedupeKey = `${serverKey}_${canonicalName.toLowerCase()}_${(finalBiome || '').toLowerCase().trim()}`;
+  // Server-aware Global Multi-Spawn Deduplication:
+  // In Steal An Egg, spawns are global across servers, but MULTIPLE eggs (even of the same kind)
+  // can legitimately spawn in the same server during a single cycle (e.g. double spawn events).
+  //
+  // We track the count of each (egg + biome) reported per server (jobId) within a 45s window:
+  // - If Server A reports instance #1, global count becomes 1 -> BROADCAST!
+  // - If Server A reports instance #2, global count becomes 2 -> BROADCAST as Multi-Spawn #2!
+  // - If Server B reports instance #1, global count is already >= 1 -> SUPPRESS as duplicate of instance #1!
+  // - If Server B reports instance #2, global count is already >= 2 -> SUPPRESS as duplicate of instance #2!
+  const dedupeKey = `${canonicalName.toLowerCase()}_${(finalBiome || '').toLowerCase().trim()}`;
   const now = Date.now();
+  const cleanJobId = jobId ? String(jobId) : 'unknown_server';
 
-  // Clean stale dedupe entries to prevent memory accumulation over time
-  if (recentEggAlerts.size > 50) {
-    for (const [k, t] of recentEggAlerts.entries()) {
-      if (now - t > EGG_DEDUPE_MS * 4) {
-        recentEggAlerts.delete(k);
-      }
+  // Clean stale dedupe entries older than EGG_DEDUPE_MS
+  for (const [k, state] of recentEggAlerts.entries()) {
+    if (now - state.firstSeen > EGG_DEDUPE_MS) {
+      recentEggAlerts.delete(k);
     }
   }
 
-  if (recentEggAlerts.has(dedupeKey) && (now - recentEggAlerts.get(dedupeKey) < EGG_DEDUPE_MS)) {
-    console.log(`[webhook/egg] ⏳ Duplicate egg alert suppressed: "${canonicalName}" in "${finalBiome}" (${serverKey})`);
-    return res.status(200).json({ ok: true, suppressed: true, message: 'Duplicate egg alert suppressed.' });
+  let alertState = recentEggAlerts.get(dedupeKey);
+  if (!alertState || (now - alertState.firstSeen >= EGG_DEDUPE_MS)) {
+    alertState = {
+      firstSeen: now,
+      globalCount: 0,
+      serverReports: new Map(),
+    };
+    recentEggAlerts.set(dedupeKey, alertState);
   }
-  recentEggAlerts.set(dedupeKey, now);
 
-  // Feed canonical egg into global AI predictor with server jobId
+  const currentServerCount = (alertState.serverReports.get(cleanJobId) || 0) + 1;
+  alertState.serverReports.set(cleanJobId, currentServerCount);
+
+  if (currentServerCount <= alertState.globalCount) {
+    console.log(`[webhook/egg] ⏳ Global duplicate suppressed: "${canonicalName}" in "${finalBiome}" (Instance #${currentServerCount} already broadcast by another server)`);
+    return res.status(200).json({ ok: true, suppressed: true, message: 'Global egg instance already broadcast.' });
+  }
+
+  alertState.globalCount++;
+  const instanceIndex = alertState.globalCount;
+
+  // Feed canonical egg into global AI predictor with server jobId & instanceIndex
   predictor.recordSpawn({
     eggName: canonicalName,
     rarity: finalRarity,
     biome: finalBiome,
     timestamp: now,
     jobId,
+    instanceIndex,
     isBannerEgg,
     bannerName: bannerName || currentActiveBanner,
   });
@@ -1205,7 +1227,8 @@ app.post('/api/notify-egg', async (req, res) => {
       return res.status(503).json({ error: 'Notification channel not available.' });
     }
 
-    const displayEggName = canonicalName.endsWith('Egg') ? canonicalName : `${canonicalName} Egg`;
+    const multiTag = instanceIndex > 1 ? ` (Multi-Spawn #${instanceIndex})` : '';
+    const displayEggName = (canonicalName.endsWith('Egg') ? canonicalName : `${canonicalName} Egg`) + multiTag;
 
     const embed = buildEggSpawnEmbed({
       eggName: displayEggName,

@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { dataPath } = require('./dataDir');
+const { analyzeShuffleBag } = require('./patternAnalyzer');
 
 const HISTORY_PATH = dataPath('spawn-history.json');
 const EGGS_PATH = dataPath('eggs.json');
@@ -198,7 +199,7 @@ function normalizeBiome(raw) {
 /**
  * Record a newly spawned egg into global learning history
  */
-function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), jobId, isBannerEgg, bannerName }) {
+function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), jobId, instanceIndex = 1, isBannerEgg, bannerName }) {
   if (!eggName) return;
 
   const rawName = String(eggName).replace(/\s+Egg$/i, '').trim();
@@ -226,27 +227,24 @@ function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), jobId, is
   const cleanRarity = normalizeRarity(rarity);
 
   // Deduplicate against recent recorded spawns:
-  // Strictly prevent duplicate network retransmissions from the same server (within 4s),
-  // while allowing distinct server spawns (jobId) and genuine multi-spawns.
+  // In Steal An Egg, multiple eggs can spawn in the same server (multi-spawns).
+  // We deduplicate matching (egg + biome + instanceIndex) within a 45s window
+  // to suppress cross-server duplicate reports while allowing separate instances (e.g. Instance #1, #2).
   if (history.length > 0) {
-    const recentSpawns = history.slice(-6);
+    const recentSpawns = history.slice(-10);
     const isDup = recentSpawns.some((h) => {
       const hName = (h.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
       const hBiome = normalizeBiome(h.biome).toLowerCase();
       const sameEggAndBiome = (hName === lowerName) &&
         (hBiome === cleanBiome.toLowerCase() || cleanBiome === 'Unknown' || hBiome === 'Unknown');
+      const sameInstance = (h.instanceIndex || 1) === (instanceIndex || 1);
       const timeDiff = Math.abs(timestamp - h.timestamp);
 
-      // If both spawns have a jobId and they differ, they are from different game servers
-      if (jobId && h.jobId && String(jobId) !== String(h.jobId)) {
-        return false;
-      }
-
-      // Fast network retry window: 4 seconds
-      return sameEggAndBiome && timeDiff < 4000;
+      // Global window: 45 seconds for the same instance
+      return sameEggAndBiome && sameInstance && timeDiff < 45000;
     });
     if (isDup) {
-      console.log(`[predictor] ⏳ Duplicate spawn suppressed in predictor: "${rawName}" in "${cleanBiome}" (jobId: ${jobId || 'global'})`);
+      console.log(`[predictor] ⏳ Global duplicate spawn suppressed in predictor: "${rawName}" #${instanceIndex} in "${cleanBiome}" (jobId: ${jobId || 'global'})`);
       return;
     }
   }
@@ -257,12 +255,14 @@ function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), jobId, is
     biome: cleanBiome,
     timestamp,
     jobId: jobId || null,
+    instanceIndex: instanceIndex || 1,
     isBannerEgg: !!isBannerEgg,
     bannerName: bannerName || null,
   });
 
   saveHistory(history);
-  console.log(`[predictor] 🧠 Logged spawn: ${rawName} (${cleanRarity}) in ${cleanBiome}. Total history: ${history.length}`);
+  const multiInfo = instanceIndex > 1 ? ` #${instanceIndex} (Multi-Spawn)` : '';
+  console.log(`[predictor] 🧠 Logged spawn: ${rawName}${multiInfo} (${cleanRarity}) in ${cleanBiome}. Total history: ${history.length}`);
 }
 
 let cachedPredictionKey = null;
@@ -538,7 +538,9 @@ function getPrediction(activeBanner = null) {
   // 5. Active Banner affinity biomes
   const bannerBiomes = (activeBanner && BANNER_BIOME_MAP[activeBanner]) ? BANNER_BIOME_MAP[activeBanner] : [];
 
-  // 5b. Compute Empirical Repeat Likelihood from History
+  // 5b. Compute Shuffle-Bag Deck Status & Empirical Repeat Likelihood
+  const shuffleAnalysis = analyzeShuffleBag(history, eggDb);
+
   let repeatSpawnCount = 0;
   for (let i = 1; i < history.length; i++) {
     const prev = (history[i - 1].eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase();
@@ -547,24 +549,33 @@ function getPrediction(activeBanner = null) {
       repeatSpawnCount++;
     }
   }
-  const empiricalRepeatRate = history.length > 1 ? (repeatSpawnCount / (history.length - 1)) : 0.08;
+  const empiricalRepeatRate = history.length > 1 ? (repeatSpawnCount / (history.length - 1)) : 0.04;
 
-  // 6. Calculate Frequency-Based Score for Every Egg
+  // 6. Calculate Statistically Balanced Score for Every Egg
   let totalScore = 0;
   const rawEggScores = [];
 
   for (const [rarity, pets] of Object.entries(eggDb)) {
     const rProb = rarityMap[rarity] || 0.1;
+    const tierPets = pets.length || 1;
+    const tierSpawns = rarityCounts[rarity] || 0;
+    const deckInfo = shuffleAnalysis.currentDeckStatus ? shuffleAnalysis.currentDeckStatus[rarity] : null;
+    const unseenEggsInTier = deckInfo && deckInfo.unseenEggs
+      ? new Set(deckInfo.unseenEggs.map((n) => n.toLowerCase()))
+      : new Set();
 
     for (const pet of pets) {
       const petKey = pet.name.toLowerCase().trim();
       const count = eggCounts[petKey] || 0;
       const streak = petDryStreaks[pet.name] ?? 999;
 
-      // Frequency factor: Eggs with higher observed spawn counts carry higher empirical weight
-      const freqFactor = 1.0 + (count * 0.85);
+      // 1. Balanced Frequency Prior with Laplace smoothing within tier:
+      // Prevents early random spawns from creating an artificial compounding feedback loop.
+      const empiricalPetShare = (count + 1) / (tierSpawns + tierPets);
+      const baseShare = 1 / tierPets;
+      const freqFactor = 0.80 + (empiricalPetShare / baseShare) * 0.20;
 
-      // Biome frequency factor blended with Markov transition probability
+      // 2. Biome frequency factor blended with Markov transition probability
       const bCount = biomeCounts[pet.biome] || 0;
       const bEmpirical = totalSpawns > 0 ? (bCount / totalSpawns) : (1 / KNOWN_BIOMES.length);
       const bMarkov = markovBiomeProb[pet.biome] || (1 / KNOWN_BIOMES.length);
@@ -573,23 +584,30 @@ function getPrediction(activeBanner = null) {
 
       let score = rProb * freqFactor * biomeFactor;
 
-      // Soft recency balancing:
-      // In Steal An Egg, repeat spawns and simultaneous spawns legitimately occur.
-      // Instead of an artificial 95% penalty (0.05) that eliminates repeat predictions,
-      // apply a soft balancing factor calibrated with empirical repeat probability.
-      // This allows naturally frequent eggs to remain in the Top Candidates if probability warrants it.
-      if (streak === 0) {
-        const repeatDampener = Math.min(0.90, Math.max(0.72, 0.70 + (empiricalRepeatRate * 1.5)));
-        score *= repeatDampener;
-      } else if (streak === 1) {
-        score *= 0.88;
-      } else if (streak === 2) {
-        score *= 0.95;
-      } else {
-        score *= (1.0 + Math.min(streak - 2, 8) * 0.04);
+      // 3. Shuffle-Bag / Pool Exhaustion Boost:
+      // If the deck is depleting, eggs that have NOT yet spawned in this cycle receive a priority boost.
+      const isUnseenInCycle = unseenEggsInTier.has(petKey);
+      if (isUnseenInCycle && deckInfo && deckInfo.exhaustionPercentage > 0) {
+        // Boost increases up to 1.8x as the active cycle nears completion
+        const exhaustionBoost = 1.0 + (deckInfo.exhaustionPercentage / 100) * 0.8;
+        score *= exhaustionBoost;
       }
 
-      // Active banner affinity boost
+      // 4. Realistic Anti-Repeat & Dry-Streak Balancing:
+      // In global spawning, immediate back-to-back repeats of the exact same egg are rare.
+      if (streak === 0) {
+        const repeatDampener = Math.max(0.15, Math.min(0.35, empiricalRepeatRate * 2.5));
+        score *= repeatDampener;
+      } else if (streak === 1) {
+        score *= 0.65;
+      } else if (streak === 2) {
+        score *= 0.85;
+      } else {
+        // Dry streak pity scaling: gradual boost for eggs that haven't appeared in 3+ cycles
+        score *= (1.0 + Math.min(streak - 2, 10) * 0.05);
+      }
+
+      // 5. Active banner affinity boost
       if (activeBanner && bannerBiomes.includes(pet.biome)) {
         score *= 1.35;
       }
@@ -603,6 +621,7 @@ function getPrediction(activeBanner = null) {
         biome: pet.biome,
         spawnCount: count,
         dryStreak: streak,
+        isUnseenInCycle,
         score,
       });
       totalScore += score;
@@ -698,6 +717,11 @@ function getPrediction(activeBanner = null) {
     top3CombinedProbability,
     top5CombinedProbability,
     repeatOdds,
+    deckStatus: shuffleAnalysis.currentDeckStatus,
+    cycleInfo: {
+      currentCycleLength: shuffleAnalysis.currentCycleLength,
+      isShuffleBag: shuffleAnalysis.isShuffleBag,
+    },
   };
 
   cachedPredictionKey = currentKey;
