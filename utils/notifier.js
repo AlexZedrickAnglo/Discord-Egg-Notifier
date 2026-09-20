@@ -245,7 +245,7 @@ function buildLiveStatusEmbed({
       value:
         `Status: **🟢 Active (Forecasting)**\n` +
         `Model Memory: **\`${prediction.totalLogged ?? 0}\` spawns logged**\n` +
-        `Estimated Spawn Time: ${nextEta} • Pace: \`${paceMin}\`\n` +
+        `Estimated Spawn Time: ${nextEta}${prediction.isOverdue ? ' ⚠️ *(Imminent)*' : ''} • Pace: \`${paceMin}\`\n` +
         `Top Forecast: 🥇 **${topName}**${topBiome} — **\`${topOdds}\`** odds`,
       inline: false,
     });
@@ -441,7 +441,8 @@ function buildPredictionEmbed(data) {
 
   const predictedTime = `<t:${nextSpawnUnix}:t> (<t:${nextSpawnUnix}:R>)`;
   const top3Tag = top3CombinedProbability ? ` • **Top 3:** \`${top3CombinedProbability}%\`` : '';
-  const description = `⏰ **Estimated Next Spawn Time:** ${predictedTime} • **Pace:** \`~${Math.round(averageIntervalSeconds / 60)}m\`${top3Tag}`;
+  const overdueTag = data.isOverdue ? ' • ⚠️ **Spawning Imminent!**' : '';
+  const description = `⏰ **Estimated Next Spawn Time:** ${predictedTime} • **Pace:** \`~${Math.round(averageIntervalSeconds / 60)}m\`${top3Tag}${overdueTag}`;
 
   const eggsToDisplay = (topEggs && topEggs.length > 0) ? topEggs : (topPets || []);
   const eggLines = eggsToDisplay.slice(0, 5).map((p, idx) => {

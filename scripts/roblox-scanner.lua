@@ -389,6 +389,11 @@ end
 local function resolveBiomeForPet(petName, rawText)
     if rawText then
         local rawLower = rawText:lower()
+        -- Strip pet name from text first to avoid false-matching biome names that appear in pet names (e.g. "Cosmic Dragon")
+        if petName then
+            local pLow = petName:lower()
+            rawLower = rawLower:gsub(pLow, "")
+        end
         for _, b in ipairs(KNOWN_BIOMES) do
             if rawLower:find(b:lower(), 1, true) then
                 return b
@@ -641,6 +646,14 @@ end
 local function handleMessage(text)
     if not text or typeof(text) ~= "string" or #text < 5 then return end
 
+    -- Handle multi-line announcements by processing each line independently
+    if text:find("\n", 1, true) then
+        for line in text:gmatch("[^\r\n]+") do
+            handleMessage(line)
+        end
+        return
+    end
+
     -- FAST ANCHOR FILTER:
     -- Announcements strictly contain one of these keywords.
     -- Discards >99% of unrelated text updates (chat, cash counters, leaderboards, stats)
@@ -672,7 +685,7 @@ local function handleMessage(text)
     end
 
     -- ── Pattern 1: Egg Spawn Announcements ───────────────────
-    local rarity, eggName, biome = string.match(text, "A[n]?%s+([%a]+)%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%s%.]*$")
+    local rarity, eggName, biome = string.match(text, "[Aa]?[Nn]?%s*([%a]+)%s+(.-)%s+[Ee]gg%s+spawned%s+in%s+(.-)[!%s%.]*$")
 
     if rarity and eggName and biome then
         if not KNOWN_RARITIES[rarity] then
@@ -681,7 +694,7 @@ local function handleMessage(text)
             rarity = (eggName:lower():find("rift", 1, true)) and "Rift" or "Special"
         end
     else
-        local e, b = string.match(text, "A[n]?%s+(.-)%s+Egg%s+spawned%s+in%s+(.-)[!%s%.]*$")
+        local e, b = string.match(text, "[Aa]?[Nn]?%s*(.-)%s+[Ee]gg%s+spawned%s+in%s+(.-)[!%s%.]*$")
         if e and b then
             eggName = e
             biome = b
@@ -743,7 +756,8 @@ local function handleMessage(text)
         -- Immediate local in-game popup (zero latency)
         notifyUser(notifTitle, notifText, 6)
 
-        -- Dispatch network alert asynchronously
+        -- Dispatch network alert asynchronously with client timestamp (ms)
+        local clientTimestamp = os.time() * 1000
         task.spawn(function()
             sendAlert("/api/notify-egg", {
                 eggName        = eggName,
@@ -752,6 +766,7 @@ local function handleMessage(text)
                 isBannerEgg    = isBannerEgg,
                 bannerName     = isBannerEgg and matchingBanner or nil,
                 requiredForPet = requiredForPet,
+                clientTime     = clientTimestamp,
             }, 3)
         end)
         return
@@ -852,7 +867,10 @@ local function hookTextElement(desc)
 
     pcall(function()
         conn = desc:GetPropertyChangedSignal("Text"):Connect(function()
-            handleMessage(desc.Text)
+            local t = desc.Text
+            if t and #t >= 5 then
+                handleMessage(t)
+            end
         end)
         table.insert(activeConnections, conn)
 

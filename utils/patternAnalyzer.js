@@ -110,9 +110,6 @@ function detectCycles(history, minK = 2, maxK = 8) {
  */
 function analyzeShuffleBag(history, eggDb) {
   const eggNames = history.map((h) => cleanEggName(h.eggName).toLowerCase()).filter(Boolean);
-  if (eggNames.length < 4) {
-    return { isShuffleBag: false, confidence: 0, minDistance: null, currentDeckStatus: {} };
-  }
 
   const distances = {};
   const lastIndex = {};
@@ -132,7 +129,7 @@ function analyzeShuffleBag(history, eggDb) {
   }
 
   const hasRepeats = Object.keys(distances).length > 0;
-  const isShuffleBag = hasRepeats && minRepeatDistance >= 6 && backToBackCount === 0;
+  const isShuffleBag = eggNames.length >= 4 && hasRepeats && minRepeatDistance >= 6 && backToBackCount === 0;
 
   // Track the current cycle: which eggs have appeared since the most recent repeat
   const recentSeen = new Set();
@@ -146,12 +143,25 @@ function analyzeShuffleBag(history, eggDb) {
     currentCycleLength++;
   }
 
-  // Find remaining unseen eggs per rarity tier in the active cycle
+  // Find remaining unseen eggs independently per rarity tier in their active cycles
   const currentDeckStatus = {};
   for (const [rarity, pets] of Object.entries(eggDb)) {
+    const tierPetNames = new Set(pets.map((p) => p.name.toLowerCase()));
+    const tierSeen = new Set();
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      const name = cleanEggName(history[i].eggName).toLowerCase();
+      if (tierPetNames.has(name)) {
+        if (tierSeen.has(name)) {
+          break; // Cycle boundary reached for this specific rarity tier
+        }
+        tierSeen.add(name);
+      }
+    }
+
     const totalInTier = pets.length;
-    const seenInTier = pets.filter((p) => recentSeen.has(p.name.toLowerCase()));
-    const unseenInTier = pets.filter((p) => !recentSeen.has(p.name.toLowerCase()));
+    const seenInTier = pets.filter((p) => tierSeen.has(p.name.toLowerCase()));
+    const unseenInTier = pets.filter((p) => !tierSeen.has(p.name.toLowerCase()));
 
     currentDeckStatus[rarity] = {
       total: totalInTier,
@@ -176,6 +186,7 @@ function analyzeShuffleBag(history, eggDb) {
 /**
  * 3. Biome Markov Transition Chain
  * Computes empirical transition matrix P(Biome_{t+1} | Biome_t).
+ * Time-bounded to 60s - 20m to eliminate noise from offline gaps and server downtime.
  */
 function analyzeBiomeTransitions(history) {
   const transitions = {};
@@ -185,9 +196,12 @@ function analyzeBiomeTransitions(history) {
     const b = history[i].biome || 'Unknown';
     biomeCounts[b] = (biomeCounts[b] || 0) + 1;
     if (i > 0) {
-      const prev = history[i - 1].biome || 'Unknown';
-      if (!transitions[prev]) transitions[prev] = {};
-      transitions[prev][b] = (transitions[prev][b] || 0) + 1;
+      const diff = (history[i].timestamp || 0) - (history[i - 1].timestamp || 0);
+      if (diff >= 60000 && diff <= 1200000) {
+        const prev = history[i - 1].biome || 'Unknown';
+        if (!transitions[prev]) transitions[prev] = {};
+        transitions[prev][b] = (transitions[prev][b] || 0) + 1;
+      }
     }
   }
 

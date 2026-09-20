@@ -1115,6 +1115,7 @@ app.post('/api/notify-egg', async (req, res) => {
     isBannerEgg,
     bannerName,
     requiredForPet,
+    clientTime,
   } = req.body ?? {};
 
   if (clientId) {
@@ -1207,11 +1208,17 @@ app.post('/api/notify-egg', async (req, res) => {
   const instanceIndex = alertState.globalCount;
 
   // Feed canonical egg into global AI predictor with server jobId & instanceIndex
+  // Use client timestamp if provided and within reasonable clock skew (< 60s)
+  let spawnTimestamp = now;
+  if (clientTime && typeof clientTime === 'number' && Math.abs(now - clientTime) < 60000) {
+    spawnTimestamp = Math.round(clientTime);
+  }
+
   predictor.recordSpawn({
     eggName: canonicalName,
     rarity: finalRarity,
     biome: finalBiome,
-    timestamp: now,
+    timestamp: spawnTimestamp,
     jobId,
     instanceIndex,
     isBannerEgg,
