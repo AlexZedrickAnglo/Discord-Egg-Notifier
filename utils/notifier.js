@@ -471,6 +471,16 @@ function buildPredictionEmbed(data) {
     { name: '🗺️ Active Biomes', value: biomeLine || 'Unknown', inline: false },
   ];
 
+  if (data.cycleInfo && data.cycleInfo.predictedNextEgg && data.cycleInfo.cycleConfidencePct) {
+    fields.push({
+      name: '🔁 Deterministic Sequence Cycle Active',
+      value:
+        `• **Projected Continuation:** **${data.cycleInfo.predictedNextEgg}** (\`${data.cycleInfo.cycleConfidencePct}%\` confidence)\n` +
+        `• **Pattern Loop:** \`${data.cycleInfo.cyclePattern}\``,
+      inline: false,
+    });
+  }
+
   if (data.accuracy && data.accuracy.totalEvaluated >= 3) {
     fields.push({
       name: '🧠 Self-Calibrating Learning Scorecard',

@@ -283,8 +283,52 @@ function analyzeAll(customHistory = null) {
   };
 }
 
+/**
+ * Project the next egg in an active periodic sequence cycle if detected
+ */
+function predictNextInCycle(history) {
+  const cycleInfo = detectCycles(history);
+  if (!cycleInfo.detected || !cycleInfo.bestMatch) return null;
+
+  const match = cycleInfo.bestMatch;
+  if (!match.isPeriodic || match.occurrences < 2) return null;
+
+  const patternArray = match.pattern.split(' -> ').map((s) => s.trim());
+  const eggs = history.map((h) => cleanEggName(h.eggName)).filter(Boolean);
+  if (eggs.length === 0 || patternArray.length === 0) return null;
+
+  const k = patternArray.length;
+  for (let offset = 0; offset < k; offset++) {
+    let matchesTail = true;
+    const testLen = Math.min(eggs.length, Math.max(2, Math.floor(k * 0.75)));
+    for (let step = 0; step < testLen; step++) {
+      const historyEgg = eggs[eggs.length - 1 - step].toLowerCase();
+      const patternIdx = (offset - step % k + k * 100) % k;
+      const expectedPatternEgg = patternArray[patternIdx].toLowerCase();
+      if (historyEgg !== expectedPatternEgg) {
+        matchesTail = false;
+        break;
+      }
+    }
+    if (matchesTail) {
+      const nextEgg = patternArray[(offset + 1) % k];
+      return {
+        nextEgg,
+        pattern: match.pattern,
+        length: k,
+        occurrences: match.occurrences,
+        period: match.period,
+        confidencePct: Math.min(95, Math.round(50 + match.occurrences * 15)),
+      };
+    }
+  }
+
+  return null;
+}
+
 module.exports = {
   detectCycles,
+  predictNextInCycle,
   analyzeShuffleBag,
   analyzeBiomeTransitions,
   analyzeTimingCadence,

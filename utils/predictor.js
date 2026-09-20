@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { dataPath } = require('./dataDir');
-const { analyzeShuffleBag } = require('./patternAnalyzer');
+const { analyzeShuffleBag, predictNextInCycle } = require('./patternAnalyzer');
 
 const HISTORY_PATH = dataPath('spawn-history.json');
 const EGGS_PATH = dataPath('eggs.json');
@@ -39,7 +39,11 @@ function loadAccuracyState() {
     biomeHits: 0,
     rarityHits: 0,
     recentEvaluations: [],
-    errorBiases: {},
+    errorBiases: {
+      eggs: {},
+      biomes: {},
+      rarities: {},
+    },
     lastForecast: null,
   };
   return cachedAccuracyState;
@@ -101,20 +105,59 @@ function evaluateActiveForecast(actualEggName, actualRarity, actualBiome, spawnT
   if (biomeHit) state.biomeHits++;
   if (rarityHit) state.rarityHits++;
 
-  // Adaptive Error-Correction:
-  // If Top 1 was a miss, increment false-positive bias counter for that candidate
+  // Adaptive Multi-Tier Error-Correction:
+  // Track false-positive and miss biases across eggs, biomes, and rarities
   state.errorBiases = state.errorBiases || {};
-  if (!top1Hit) {
-    state.errorBiases[forecast.topEgg] = (state.errorBiases[forecast.topEgg] || 0) + 1;
-  } else if (state.errorBiases[forecast.topEgg]) {
-    // Reward accurate forecast by decreasing false-positive bias
-    state.errorBiases[forecast.topEgg] = Math.max(0, state.errorBiases[forecast.topEgg] - 1);
+  if (!state.errorBiases.eggs) state.errorBiases.eggs = {};
+  if (!state.errorBiases.biomes) state.errorBiases.biomes = {};
+  if (!state.errorBiases.rarities) state.errorBiases.rarities = {};
+
+  // Migrate any legacy flat egg keys
+  for (const [k, v] of Object.entries(state.errorBiases)) {
+    if (k !== 'eggs' && k !== 'biomes' && k !== 'rarities' && typeof v === 'number') {
+      state.errorBiases.eggs[k] = v;
+      delete state.errorBiases[k];
+    }
   }
 
-  // Relieve error bias on the actual egg that did spawn
+  // 1. Egg candidate bias
+  if (!top1Hit) {
+    state.errorBiases.eggs[forecast.topEgg] = (state.errorBiases.eggs[forecast.topEgg] || 0) + 1;
+  } else if (state.errorBiases.eggs[forecast.topEgg]) {
+    state.errorBiases.eggs[forecast.topEgg] = Math.max(0, state.errorBiases.eggs[forecast.topEgg] - 1);
+  }
+
   const actualCanonical = String(actualEggName).replace(/\s+Egg$/i, '').trim();
-  if (state.errorBiases[actualCanonical] && state.errorBiases[actualCanonical] > 0) {
-    state.errorBiases[actualCanonical] = Math.max(0, state.errorBiases[actualCanonical] - 1);
+  if (state.errorBiases.eggs[actualCanonical] && state.errorBiases.eggs[actualCanonical] > 0) {
+    state.errorBiases.eggs[actualCanonical] = Math.max(0, state.errorBiases.eggs[actualCanonical] - 1);
+  }
+
+  // 2. Biome bias
+  const predBiomeNorm = normalizeBiome(forecast.predictedBiome || '');
+  if (predBiomeNorm && predBiomeNorm !== 'Unknown') {
+    if (!biomeHit) {
+      state.errorBiases.biomes[predBiomeNorm] = (state.errorBiases.biomes[predBiomeNorm] || 0) + 1;
+    } else if (state.errorBiases.biomes[predBiomeNorm]) {
+      state.errorBiases.biomes[predBiomeNorm] = Math.max(0, state.errorBiases.biomes[predBiomeNorm] - 1);
+    }
+  }
+  const actualBiomeNorm = normalizeBiome(actualBiome);
+  if (actualBiomeNorm && actualBiomeNorm !== 'Unknown' && state.errorBiases.biomes[actualBiomeNorm] > 0) {
+    state.errorBiases.biomes[actualBiomeNorm] = Math.max(0, state.errorBiases.biomes[actualBiomeNorm] - 1);
+  }
+
+  // 3. Rarity bias
+  const predRarityNorm = normalizeRarity(forecast.predictedRarity || '');
+  if (predRarityNorm) {
+    if (!rarityHit) {
+      state.errorBiases.rarities[predRarityNorm] = (state.errorBiases.rarities[predRarityNorm] || 0) + 1;
+    } else if (state.errorBiases.rarities[predRarityNorm]) {
+      state.errorBiases.rarities[predRarityNorm] = Math.max(0, state.errorBiases.rarities[predRarityNorm] - 1);
+    }
+  }
+  const actualRarityNorm = normalizeRarity(actualRarity);
+  if (actualRarityNorm && state.errorBiases.rarities[actualRarityNorm] > 0) {
+    state.errorBiases.rarities[actualRarityNorm] = Math.max(0, state.errorBiases.rarities[actualRarityNorm] - 1);
   }
 
   state.recentEvaluations = state.recentEvaluations || [];
@@ -533,6 +576,18 @@ function getPrediction(activeBanner = null) {
       ? setForStats[mid]
       : (setForStats[mid - 1] + setForStats[mid]) / 2;
 
+    // 15-Spawn EMA Pace Adaptation:
+    // Blend 65% recent 15-spawn median + 35% global median to dynamically adapt to event pace changes
+    if (setForStats.length >= 4) {
+      const recent15 = setForStats.slice(-15);
+      const recentSorted = [...recent15].sort((a, b) => a - b);
+      const rMid = Math.floor(recentSorted.length / 2);
+      const recentMedianMs = recentSorted.length % 2 !== 0
+        ? recentSorted[rMid]
+        : (recentSorted[rMid - 1] + recentSorted[rMid]) / 2;
+      medianIntervalMs = Math.round(0.65 * recentMedianMs + 0.35 * medianIntervalMs);
+    }
+
     const mean = setForStats.reduce((a, b) => a + b, 0) / setForStats.length;
     const variance = setForStats.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / setForStats.length;
     stdDevMs = Math.sqrt(variance);
@@ -591,17 +646,36 @@ function getPrediction(activeBanner = null) {
     }
   }
 
-  const lastBiome = lastSpawn ? normalizeBiome(lastSpawn.biome) : null;
-  const markovBiomeProb = {};
-  if (lastBiome && transitionCounts[lastBiome]) {
-    const totalTransitions = Object.values(transitionCounts[lastBiome]).reduce((a, b) => a + b, 0);
-    for (const b of KNOWN_BIOMES) {
-      const count = transitionCounts[lastBiome][b] || 0;
-      // Laplace smoothing (+0.5)
-      markovBiomeProb[b] = (count + 0.5) / (totalTransitions + 0.5 * KNOWN_BIOMES.length);
+  // Multi-Spawn Wave Identification (spawns within 45s of latest spawn)
+  const latestWave = [];
+  if (history.length > 0) {
+    const lastTs = history[history.length - 1].timestamp;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (Math.abs(lastTs - history[i].timestamp) <= 45000) {
+        latestWave.push(history[i]);
+      } else {
+        break;
+      }
     }
-  } else {
-    for (const b of KNOWN_BIOMES) {
+  }
+  const latestWaveBiomes = new Set(latestWave.map((h) => normalizeBiome(h.biome)).filter((b) => b !== 'Unknown'));
+  const latestWaveEggs = new Set(latestWave.map((h) => (h.eggName || '').replace(/\s+Egg$/i, '').trim().toLowerCase()).filter(Boolean));
+
+  const markovBiomeProb = {};
+  for (const b of KNOWN_BIOMES) {
+    if (latestWaveBiomes.size > 0) {
+      let sumProb = 0;
+      for (const waveB of latestWaveBiomes) {
+        if (transitionCounts[waveB]) {
+          const totalTransitions = Object.values(transitionCounts[waveB]).reduce((acc, val) => acc + val, 0);
+          const count = transitionCounts[waveB][b] || 0;
+          sumProb += (count + 0.5) / (totalTransitions + 0.5 * KNOWN_BIOMES.length);
+        } else {
+          sumProb += 1.0 / KNOWN_BIOMES.length;
+        }
+      }
+      markovBiomeProb[b] = sumProb / latestWaveBiomes.size;
+    } else {
       markovBiomeProb[b] = 1.0 / KNOWN_BIOMES.length;
     }
   }
@@ -706,6 +780,24 @@ function getPrediction(activeBanner = null) {
     }
   }
 
+  // 4b. Pre-index biome dry streaks
+  const biomeDryStreaks = {};
+  for (const b of KNOWN_BIOMES) {
+    biomeDryStreaks[b] = historyLen;
+  }
+  const foundBiomes = new Set();
+  for (let i = historyLen - 1; i >= 0; i--) {
+    const b = normalizeBiome(history[i].biome);
+    if (b !== 'Unknown' && !foundBiomes.has(b)) {
+      biomeDryStreaks[b] = (historyLen - 1) - i;
+      foundBiomes.add(b);
+      if (foundBiomes.size >= KNOWN_BIOMES.length) break;
+    }
+  }
+
+  // 4c. Detect Deterministic Sequence Cycles
+  const cycleForecast = predictNextInCycle(history);
+
   // 5. Active Banner affinity biomes
   const bannerBiomes = (activeBanner && BANNER_BIOME_MAP[activeBanner]) ? BANNER_BIOME_MAP[activeBanner] : [];
 
@@ -747,14 +839,27 @@ function getPrediction(activeBanner = null) {
       const baseShare = 1 / tierPets;
       const freqFactor = 0.80 + (empiricalPetShare / baseShare) * 0.20;
 
-      // 2. Biome frequency factor blended with Markov transition probability
+      // 2. Pure Bayesian Biome Weighting & Dry-Streak Pity:
       const bCount = biomeCounts[pet.biome] || 0;
       const bEmpirical = totalSpawns > 0 ? (bCount / totalSpawns) : (1 / KNOWN_BIOMES.length);
       const bMarkov = markovBiomeProb[pet.biome] || (1 / KNOWN_BIOMES.length);
-      // 60% Markov transition weight + 40% historical biome frequency
-      const biomeFactor = 0.5 + (bMarkov * 1.5) + (bEmpirical * 0.8);
+      // Pure Bayesian combination: 70% Markov transition likelihood + 30% empirical prior, normalized around 1.0
+      const bFactorCombined = (bMarkov * 0.70) + (bEmpirical * 0.30);
+      const biomeFactor = bFactorCombined * KNOWN_BIOMES.length;
 
-      let score = rProb * freqFactor * biomeFactor;
+      // Biome Dry-Streak Pity & Anti-Repeat
+      const bStreak = biomeDryStreaks[pet.biome] ?? 999;
+      let biomeStreakFactor = 1.0;
+      if (bStreak === 0 || latestWaveBiomes.has(pet.biome)) {
+        biomeStreakFactor = 0.75;
+      } else if (bStreak === 1) {
+        biomeStreakFactor = 0.90;
+      } else if (bStreak >= 4) {
+        // Biome rotation pity: biomes that haven't appeared in 4+ spawn cycles get progressive boost
+        biomeStreakFactor = 1.0 + Math.min(bStreak - 3, 8) * 0.08;
+      }
+
+      let score = rProb * freqFactor * biomeFactor * biomeStreakFactor;
 
       // 3. Shuffle-Bag / Pool Exhaustion Boost:
       // If the deck is depleting, eggs that have NOT yet spawned in this cycle receive a priority boost.
@@ -767,7 +872,8 @@ function getPrediction(activeBanner = null) {
 
       // 4. Realistic Anti-Repeat & Dry-Streak Balancing:
       // In global spawning, immediate back-to-back repeats of the exact same egg are rare.
-      if (streak === 0) {
+      const isLastWaveEgg = latestWaveEggs.has(petKey);
+      if (streak === 0 || isLastWaveEgg) {
         const repeatDampener = Math.max(0.15, Math.min(0.35, empiricalRepeatRate * 2.5));
         score *= repeatDampener;
       } else if (streak === 1) {
@@ -779,19 +885,42 @@ function getPrediction(activeBanner = null) {
         score *= (1.0 + Math.min(streak - 2, 10) * 0.05);
       }
 
-      // 5. Active banner affinity boost
-      if (activeBanner && bannerBiomes.includes(pet.biome)) {
-        score *= 1.35;
+      // 5. Active Rift Banner Affinity:
+      // When a banner is active, banner pool biomes receive a strong 2.0x boost,
+      // while biomes outside the banner pool receive a 0.65x dampener.
+      if (activeBanner && bannerBiomes.length > 0) {
+        if (bannerBiomes.includes(pet.biome)) {
+          score *= 2.0;
+        } else {
+          score *= 0.65;
+        }
       }
 
-      // 6. Adaptive Error-Correction Dampening:
-      // If an egg was repeatedly predicted as #1 but failed to spawn, apply a progressive penalty
-      // (6% per false prediction, capped at 35%) until real spawns catch up.
-      const petBias = (accuracyState.errorBiases && accuracyState.errorBiases[pet.name]) || 0;
-      if (petBias > 0) {
-        const adaptiveDampener = Math.max(0.65, 1.0 - petBias * 0.06);
-        score *= adaptiveDampener;
+      // 6. Deterministic Sequence Cycle Continuation Boost:
+      if (cycleForecast && cycleForecast.nextEgg) {
+        const cleanProj = cycleForecast.nextEgg.toLowerCase().trim();
+        if (petKey === cleanProj || petKey.includes(cleanProj) || cleanProj.includes(petKey)) {
+          score *= 2.8;
+        }
       }
+
+      // 7. Multi-Tier Adaptive Error-Correction Dampening:
+      const eggBias = (accuracyState.errorBiases?.eggs && accuracyState.errorBiases.eggs[pet.name]) ||
+                      (accuracyState.errorBiases && typeof accuracyState.errorBiases[pet.name] === 'number' ? accuracyState.errorBiases[pet.name] : 0);
+      const biomeBias = (accuracyState.errorBiases?.biomes && accuracyState.errorBiases.biomes[pet.biome]) || 0;
+      const rarityBias = (accuracyState.errorBiases?.rarities && accuracyState.errorBiases.rarities[rarity]) || 0;
+
+      let adaptiveDampener = 1.0;
+      if (eggBias > 0) {
+        adaptiveDampener *= Math.max(0.65, 1.0 - eggBias * 0.06);
+      }
+      if (biomeBias > 0) {
+        adaptiveDampener *= Math.max(0.75, 1.0 - biomeBias * 0.04);
+      }
+      if (rarityBias > 0) {
+        adaptiveDampener *= Math.max(0.80, 1.0 - rarityBias * 0.03);
+      }
+      score *= adaptiveDampener;
 
       const eggName = pet.name.endsWith('Egg') ? pet.name : `${pet.name} Egg`;
 
@@ -949,6 +1078,9 @@ function getPrediction(activeBanner = null) {
     cycleInfo: {
       currentCycleLength: shuffleAnalysis.currentCycleLength,
       isShuffleBag: shuffleAnalysis.isShuffleBag,
+      predictedNextEgg: cycleForecast ? cycleForecast.nextEgg : null,
+      cycleConfidencePct: cycleForecast ? cycleForecast.confidencePct : null,
+      cyclePattern: cycleForecast ? cycleForecast.pattern : null,
     },
     accuracy,
   };
