@@ -1,0 +1,11 @@
+{
+  "totalEvaluated": 0,
+  "top1Hits": 0,
+  "top3Hits": 0,
+  "top5Hits": 0,
+  "biomeHits": 0,
+  "rarityHits": 0,
+  "recentEvaluations": [],
+  "errorBiases": {},
+  "lastForecast": null
+}

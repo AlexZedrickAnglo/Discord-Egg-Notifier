@@ -33,7 +33,7 @@ if (!fs.existsSync(PERSISTENT_DIR)) {
 }
 
 // Seed files from bundled ./data/ if they don't exist in the persistent path yet
-const SEED_FILES = ['spawn-history.json', 'eggs.json'];
+const SEED_FILES = ['spawn-history.json', 'eggs.json', 'accuracy-state.json'];
 
 for (const file of SEED_FILES) {
   const persistentPath = path.join(PERSISTENT_DIR, file);

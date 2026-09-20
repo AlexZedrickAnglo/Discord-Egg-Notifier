@@ -11,6 +11,133 @@ const { analyzeShuffleBag } = require('./patternAnalyzer');
 
 const HISTORY_PATH = dataPath('spawn-history.json');
 const EGGS_PATH = dataPath('eggs.json');
+const ACCURACY_PATH = dataPath('accuracy-state.json');
+
+let cachedAccuracyState = null;
+
+/**
+ * Load accuracy learning state
+ */
+function loadAccuracyState() {
+  if (cachedAccuracyState) return cachedAccuracyState;
+  try {
+    if (fs.existsSync(ACCURACY_PATH)) {
+      const data = JSON.parse(fs.readFileSync(ACCURACY_PATH, 'utf8'));
+      if (data && typeof data.totalEvaluated === 'number') {
+        cachedAccuracyState = data;
+        return cachedAccuracyState;
+      }
+    }
+  } catch (err) {
+    console.error('[predictor] Failed to load accuracy-state.json:', err.message);
+  }
+  cachedAccuracyState = {
+    totalEvaluated: 0,
+    top1Hits: 0,
+    top3Hits: 0,
+    top5Hits: 0,
+    biomeHits: 0,
+    rarityHits: 0,
+    recentEvaluations: [],
+    errorBiases: {},
+    lastForecast: null,
+  };
+  return cachedAccuracyState;
+}
+
+/**
+ * Persist accuracy learning state (atomic write to prevent race conditions)
+ */
+function saveAccuracyState(state) {
+  cachedAccuracyState = state;
+  const jsonStr = JSON.stringify(state, null, 2);
+  const tmpPath = `${ACCURACY_PATH}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, jsonStr, 'utf8');
+    fs.renameSync(tmpPath, ACCURACY_PATH);
+  } catch (_) {
+    try {
+      fs.writeFileSync(ACCURACY_PATH, jsonStr, 'utf8');
+    } catch (err) {
+      console.error('[predictor] Failed to write accuracy-state.json:', err.message);
+    }
+  }
+}
+
+/**
+ * Compare actual spawn outcome against the last active forecast (Error-Driven Online Learning)
+ */
+function evaluateActiveForecast(actualEggName, actualRarity, actualBiome, spawnTimestamp) {
+  const state = loadAccuracyState();
+  const forecast = state.lastForecast;
+  if (!forecast || !forecast.topEgg) return;
+
+  // Only evaluate forecasts generated before this spawn and within the last 25 minutes
+  const forecastAge = spawnTimestamp - (forecast.timestamp || 0);
+  if (forecastAge < 0 || forecastAge > 1500000) {
+    return;
+  }
+
+  const actualClean = String(actualEggName).replace(/\s+Egg$/i, '').trim().toLowerCase();
+  const actualB = normalizeBiome(actualBiome).toLowerCase();
+  const actualR = normalizeRarity(actualRarity).toLowerCase();
+
+  const top1Clean = String(forecast.topEgg).replace(/\s+Egg$/i, '').trim().toLowerCase();
+  const top3Clean = (forecast.top3 || []).map((n) => String(n).replace(/\s+Egg$/i, '').trim().toLowerCase());
+  const top5Clean = (forecast.top5 || []).map((n) => String(n).replace(/\s+Egg$/i, '').trim().toLowerCase());
+  const predBClean = normalizeBiome(forecast.predictedBiome || '').toLowerCase();
+  const predRClean = normalizeRarity(forecast.predictedRarity || '').toLowerCase();
+
+  const top1Hit = (top1Clean === actualClean || top1Clean.includes(actualClean) || actualClean.includes(top1Clean));
+  const top3Hit = top3Clean.some((n) => n === actualClean || n.includes(actualClean) || actualClean.includes(n));
+  const top5Hit = top5Clean.some((n) => n === actualClean || n.includes(actualClean) || actualClean.includes(n));
+  const biomeHit = predBClean !== 'unknown' && actualB !== 'unknown' && (predBClean === actualB);
+  const rarityHit = predRClean === actualR;
+
+  state.totalEvaluated++;
+  if (top1Hit) state.top1Hits++;
+  if (top3Hit) state.top3Hits++;
+  if (top5Hit) state.top5Hits++;
+  if (biomeHit) state.biomeHits++;
+  if (rarityHit) state.rarityHits++;
+
+  // Adaptive Error-Correction:
+  // If Top 1 was a miss, increment false-positive bias counter for that candidate
+  state.errorBiases = state.errorBiases || {};
+  if (!top1Hit) {
+    state.errorBiases[forecast.topEgg] = (state.errorBiases[forecast.topEgg] || 0) + 1;
+  } else if (state.errorBiases[forecast.topEgg]) {
+    // Reward accurate forecast by decreasing false-positive bias
+    state.errorBiases[forecast.topEgg] = Math.max(0, state.errorBiases[forecast.topEgg] - 1);
+  }
+
+  // Relieve error bias on the actual egg that did spawn
+  const actualCanonical = String(actualEggName).replace(/\s+Egg$/i, '').trim();
+  if (state.errorBiases[actualCanonical] && state.errorBiases[actualCanonical] > 0) {
+    state.errorBiases[actualCanonical] = Math.max(0, state.errorBiases[actualCanonical] - 1);
+  }
+
+  state.recentEvaluations = state.recentEvaluations || [];
+  state.recentEvaluations.push({
+    actualEgg: actualCanonical,
+    predictedTop1: forecast.topEgg,
+    top1Hit,
+    top3Hit,
+    biomeHit,
+    rarityHit,
+    timestamp: spawnTimestamp,
+  });
+  if (state.recentEvaluations.length > 50) {
+    state.recentEvaluations.shift();
+  }
+
+  state.lastForecast = null; // Consume forecast
+  saveAccuracyState(state);
+
+  const outcomeTag = top1Hit ? '🎯 TOP-1 HIT!' : (top3Hit ? '✅ TOP-3 HIT!' : '❌ MISS');
+  const top3Pct = Math.round((state.top3Hits / state.totalEvaluated) * 100);
+  console.log(`[predictor] 🧠 Evaluated forecast vs spawn: ${outcomeTag} (Actual: "${actualCanonical}" in ${actualBiome} | Predicted: "${forecast.topEgg}"). Total evaluated: ${state.totalEvaluated} (Top-3 Accuracy: ${top3Pct}%)`);
+}
 
 const KNOWN_BIOMES = [
   'Jungle',
@@ -263,6 +390,13 @@ function recordSpawn({ eggName, rarity, biome, timestamp = Date.now(), jobId, in
   saveHistory(history);
   const multiInfo = instanceIndex > 1 ? ` #${instanceIndex} (Multi-Spawn)` : '';
   console.log(`[predictor] 🧠 Logged spawn: ${rawName}${multiInfo} (${cleanRarity}) in ${cleanBiome}. Total history: ${history.length}`);
+
+  // Evaluate the active forecast against this real spawn outcome (Error-Driven Learning)
+  try {
+    evaluateActiveForecast(rawName, cleanRarity, cleanBiome, timestamp);
+  } catch (evalErr) {
+    console.error('[predictor] ⚠️ Error evaluating forecast against spawn:', evalErr.message);
+  }
 }
 
 let cachedPredictionKey = null;
@@ -335,6 +469,22 @@ function getPrediction(activeBanner = null) {
       };
     });
 
+    const accuracyState = loadAccuracyState();
+    const totalEval = accuracyState.totalEvaluated || 0;
+    const accuracy = {
+      totalEvaluated: totalEval,
+      top1Hits: accuracyState.top1Hits || 0,
+      top3Hits: accuracyState.top3Hits || 0,
+      top5Hits: accuracyState.top5Hits || 0,
+      biomeHits: accuracyState.biomeHits || 0,
+      rarityHits: accuracyState.rarityHits || 0,
+      top1RatePct: totalEval > 0 ? Math.round((accuracyState.top1Hits / totalEval) * 1000) / 10 : null,
+      top3RatePct: totalEval > 0 ? Math.round((accuracyState.top3Hits / totalEval) * 1000) / 10 : null,
+      top5RatePct: totalEval > 0 ? Math.round((accuracyState.top5Hits / totalEval) * 1000) / 10 : null,
+      biomeRatePct: totalEval > 0 ? Math.round((accuracyState.biomeHits / totalEval) * 1000) / 10 : null,
+      rarityRatePct: totalEval > 0 ? Math.round((accuracyState.rarityHits / totalEval) * 1000) / 10 : null,
+    };
+
     return {
       ...cachedPredictionBase.result,
       nextSpawnUnix,
@@ -343,6 +493,7 @@ function getPrediction(activeBanner = null) {
       nextSpawnEtaSeconds: secondsRemaining,
       isOverdue,
       overdueSeconds,
+      accuracy,
       topEggs: rankedEggs.slice(0, 10),
       topPets: rankedEggs.slice(0, 10),
     };
@@ -574,6 +725,7 @@ function getPrediction(activeBanner = null) {
   // 6. Calculate Statistically Balanced Score for Every Egg
   let totalScore = 0;
   const rawEggScores = [];
+  const accuracyState = loadAccuracyState();
 
   for (const [rarity, pets] of Object.entries(eggDb)) {
     const rProb = rarityMap[rarity] || 0.1;
@@ -630,6 +782,15 @@ function getPrediction(activeBanner = null) {
       // 5. Active banner affinity boost
       if (activeBanner && bannerBiomes.includes(pet.biome)) {
         score *= 1.35;
+      }
+
+      // 6. Adaptive Error-Correction Dampening:
+      // If an egg was repeatedly predicted as #1 but failed to spawn, apply a progressive penalty
+      // (6% per false prediction, capped at 35%) until real spawns catch up.
+      const petBias = (accuracyState.errorBiases && accuracyState.errorBiases[pet.name]) || 0;
+      if (petBias > 0) {
+        const adaptiveDampener = Math.max(0.65, 1.0 - petBias * 0.06);
+        score *= adaptiveDampener;
       }
 
       const eggName = pet.name.endsWith('Egg') ? pet.name : `${pet.name} Egg`;
@@ -725,6 +886,38 @@ function getPrediction(activeBanner = null) {
     historicalRatePct: Math.round(empiricalRepeatRate * 1000) / 10,
   };
 
+  // Snapshot active forecast so next spawn can be evaluated against it
+  const topCandidateEgg = rankedEggs[0];
+  if (topCandidateEgg) {
+    if (!accuracyState.lastForecast || (now - (accuracyState.lastForecast.timestamp || 0) > 300000)) {
+      accuracyState.lastForecast = {
+        timestamp: now,
+        topEgg: topCandidateEgg.name,
+        top3: rankedEggs.slice(0, 3).map((e) => e.name),
+        top5: rankedEggs.slice(0, 5).map((e) => e.name),
+        predictedBiome: rankedBiomes[0]?.biome || 'Unknown',
+        predictedRarity: Object.entries(rarityMap).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Secret',
+        confidence: topCandidateEgg.probability,
+      };
+      saveAccuracyState(accuracyState);
+    }
+  }
+
+  const totalEval = accuracyState.totalEvaluated || 0;
+  const accuracy = {
+    totalEvaluated: totalEval,
+    top1Hits: accuracyState.top1Hits || 0,
+    top3Hits: accuracyState.top3Hits || 0,
+    top5Hits: accuracyState.top5Hits || 0,
+    biomeHits: accuracyState.biomeHits || 0,
+    rarityHits: accuracyState.rarityHits || 0,
+    top1RatePct: totalEval > 0 ? Math.round((accuracyState.top1Hits / totalEval) * 1000) / 10 : null,
+    top3RatePct: totalEval > 0 ? Math.round((accuracyState.top3Hits / totalEval) * 1000) / 10 : null,
+    top5RatePct: totalEval > 0 ? Math.round((accuracyState.top5Hits / totalEval) * 1000) / 10 : null,
+    biomeRatePct: totalEval > 0 ? Math.round((accuracyState.biomeHits / totalEval) * 1000) / 10 : null,
+    rarityRatePct: totalEval > 0 ? Math.round((accuracyState.rarityHits / totalEval) * 1000) / 10 : null,
+  };
+
   const finalResult = {
     totalLogged: history.length,
     lastSpawn,
@@ -757,6 +950,7 @@ function getPrediction(activeBanner = null) {
       currentCycleLength: shuffleAnalysis.currentCycleLength,
       isShuffleBag: shuffleAnalysis.isShuffleBag,
     },
+    accuracy,
   };
 
   cachedPredictionKey = currentKey;
@@ -831,4 +1025,7 @@ module.exports = {
   renderProgressBar,
   normalizeBiome,
   normalizeRarity,
+  loadAccuracyState,
+  saveAccuracyState,
+  evaluateActiveForecast,
 };

@@ -240,13 +240,17 @@ function buildLiveStatusEmbed({
       ? `<t:${prediction.nextSpawnUnix}:R> (<t:${prediction.nextSpawnUnix}:t>)`
       : '—';
 
+    const accTag = (prediction?.accuracy?.totalEvaluated >= 3 && prediction?.accuracy?.top3RatePct != null)
+      ? ` • Acc: **\`${prediction.accuracy.top3RatePct}%\`** *(Top 3)*`
+      : '';
+
     embed.addFields({
       name: '🔮 AI Prediction Status',
       value:
         `Status: **🟢 Active (Forecasting)**\n` +
         `Model Memory: **\`${prediction.totalLogged ?? 0}\` spawns logged**\n` +
         `Estimated Spawn Time: ${nextEta}${prediction.isOverdue ? ' ⚠️ *(Imminent)*' : ''} • Pace: \`${paceMin}\`\n` +
-        `Top Forecast: 🥇 **${topName}**${topBiome} — **\`${topOdds}\`** odds`,
+        `Top Forecast: 🥇 **${topName}**${topBiome} — **\`${topOdds}\`** odds${accTag}`,
       inline: false,
     });
   }
@@ -460,16 +464,30 @@ function buildPredictionEmbed(data) {
   const rarityLine = `👑 **Divine:** \`${rarityOdds.Divine}%\`  •  💎 **Eternal:** \`${rarityOdds.Eternal}%\`  •  🔮 **Secret:** \`${rarityOdds.Secret}%\``;
   const biomeLine = (topBiomes || []).slice(0, 4).map((b) => `• **${b.biome}:** \`${b.probability}%\``).join('  ');
 
+  const fields = [
+    { name: '📜 Last Spawn', value: lastSpawnDesc, inline: false },
+    { name: '🎯 Top Candidates', value: eggLines || 'No eggs available', inline: false },
+    { name: '📊 Rarity Odds', value: rarityLine, inline: false },
+    { name: '🗺️ Active Biomes', value: biomeLine || 'Unknown', inline: false },
+  ];
+
+  if (data.accuracy && data.accuracy.totalEvaluated >= 3) {
+    fields.push({
+      name: '🧠 Self-Calibrating Learning Scorecard',
+      value:
+        `• **Top 3 Candidate Window:** \`${data.accuracy.top3RatePct ?? 0}%\`\n` +
+        `• **Exact #1 Pick:** \`${data.accuracy.top1RatePct ?? 0}%\`\n` +
+        `• **Biome Match:** \`${data.accuracy.biomeRatePct ?? 0}%\`\n` +
+        `*(Evaluated across **${data.accuracy.totalEvaluated}** live spawns with dynamic bias correction)*`,
+      inline: false,
+    });
+  }
+
   const embed = new EmbedBuilder()
     .setTitle('🔮  Global Egg Spawn Predictor')
     .setColor(0x9B59B6)
     .setDescription(description)
-    .addFields(
-      { name: '📜 Last Spawn', value: lastSpawnDesc, inline: false },
-      { name: '🎯 Top Candidates', value: eggLines || 'No eggs available', inline: false },
-      { name: '📊 Rarity Odds', value: rarityLine, inline: false },
-      { name: '🗺️ Active Biomes', value: biomeLine || 'Unknown', inline: false },
-    )
+    .addFields(fields)
     .setFooter({ text: `Steal An Egg Notifier • Global AI Predictor • ${data.totalLogged || 0} Spawns Logged` })
     .setTimestamp();
 
